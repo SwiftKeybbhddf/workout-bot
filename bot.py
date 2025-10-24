@@ -636,7 +636,7 @@ def error_handler(update: Update, context: CallbackContext):
             "❌ Произошла ошибка. Попробуйте еще раз или начните заново: /start"
         )
 
-  def main():
+def main():
     """Основная функция запуска бота"""
     # Проверяем токен
     if not BOT_TOKEN:
