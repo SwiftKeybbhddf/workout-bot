@@ -13,7 +13,91 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler
 )
+import matplotlib.pyplot as plt
+import io
+import base64
+from datetime import datetime, timedelta
 
+def generate_progress_chart(user_id, exercise_name, days_back=30):
+    """Генерирует график прогресса по упражнению"""
+    try:
+        history = get_exercise_history(user_id, exercise_name)
+        if not history or len(history) < 2:
+            return None
+        
+        # Фильтруем данные за последние days_back дней
+        cutoff_date = datetime.now() - timedelta(days=days_back)
+        filtered_history = [
+            h for h in history 
+            if datetime.strptime(h['date'], '%d.%m.%Y') >= cutoff_date
+        ]
+        
+        if len(filtered_history) < 2:
+            return None
+            
+        # Сортируем по дате
+        filtered_history.sort(key=lambda x: datetime.strptime(x['date'], '%d.%m.%Y'))
+        
+        dates = [h['date'] for h in filtered_history]
+        weights = [h['weight'] for h in filtered_history]
+        reps = [h['reps'] for h in filtered_history]
+        
+        # Создаем график
+        plt.figure(figsize=(10, 6))
+        
+        # График веса
+        plt.subplot(2, 1, 1)
+        plt.plot(dates, weights, 'o-', linewidth=2, markersize=8, color='#2E86AB')
+        plt.title(f'📈 Прогресс: {exercise_name}', fontsize=14, fontweight='bold', pad=20)
+        plt.ylabel('Вес (кг)', fontsize=12)
+        plt.grid(True, alpha=0.3)
+        plt.xticks(rotation=45)
+        
+        # График повторений
+        plt.subplot(2, 1, 2)
+        plt.plot(dates, reps, 's-', linewidth=2, markersize=6, color='#A23B72')
+        plt.ylabel('Повторения', fontsize=12)
+        plt.xlabel('Дата', fontsize=12)
+        plt.grid(True, alpha=0.3)
+        plt.xticks(rotation=45)
+        
+        plt.tight_layout()
+        
+        # Сохраняем в buffer
+        buffer = io.BytesIO()
+        plt.savefig(buffer, format='png', dpi=100, bbox_inches='tight')
+        buffer.seek(0)
+        plt.close()
+        
+        return buffer
+        
+    except Exception as e:
+        print(f"Ошибка генерации графика: {e}")
+        return None
+
+def create_simple_ascii_chart(history):
+    """Создает простой ASCII-график когда нет возможности сгенерировать изображение"""
+    if not history or len(history) < 2:
+        return "Недостаточно данных для графика"
+    
+    # Берем последние 8 записей
+    recent_history = history[:8]
+    weights = [h['weight'] for h in recent_history]
+    
+    min_weight = min(weights)
+    max_weight = max(weights)
+    
+    if min_weight == max_weight:
+        return "📊 Вес стабилен: {}кг".format(weights[0])
+    
+    chart_lines = []
+    for weight in reversed(weights):
+        # Нормализуем вес для отображения в 20 символах
+        normalized = int((weight - min_weight) / (max_weight - min_weight) * 15)
+        bar = "█" * (normalized + 1)
+        chart_lines.append(f"{weight:4}кг |{bar}")
+    
+    return "📊 График прогресса:\n" + "\n".join(chart_lines)
 # Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
