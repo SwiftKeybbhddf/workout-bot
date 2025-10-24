@@ -81,7 +81,7 @@ TRAINING_PROGRAMS = {
 }
 
 # Состояния разговора
-CHOOSING_DAY, CHOOSING_EXERCISE, ENTERING_EXERCISE_DATA, WEIGHING, TIMER_SELECTION = range(5)
+CHOOSING_DAY, CHOOSING_EXERCISE, ENTERING_EXERCISE_DATA, WEIGHING = range(4)
 DATA_FILE = 'user_data.json'
 
 # ========== ФУНКЦИИ РАБОТЫ С ДАННЫМИ ==========
@@ -471,10 +471,6 @@ def get_exercise_keyboard(day, completed_exercises, user_id=None):
     
     # Добавляем расширенные кнопки управления
     keyboard.append([
-        InlineKeyboardButton("⏱ 1.5 мин", callback_data="timer_90"),
-        InlineKeyboardButton("⏱ 3 мин", callback_data="timer_180")
-    ])
-    keyboard.append([
         InlineKeyboardButton("📊 Прогресс", callback_data="progress"),
         InlineKeyboardButton("🎯 Рекомендации", callback_data="reminders")
     ])
@@ -485,19 +481,24 @@ def get_exercise_keyboard(day, completed_exercises, user_id=None):
     
     return InlineKeyboardMarkup(keyboard)
 
-def get_timer_keyboard():
-    """Создает клавиатуру для выбора таймера"""
+def get_exercise_detail_keyboard():
+    """Создает клавиатуру для окна упражнения с таймерами"""
     keyboard = [
         [
-            InlineKeyboardButton("⏱ 1.5 минуты", callback_data="timer_90"),
-            InlineKeyboardButton("⏱ 3 минуты", callback_data="timer_180")
+            InlineKeyboardButton("⏱ 1.5 мин", callback_data="timer_90"),
+            InlineKeyboardButton("⏱ 3 мин", callback_data="timer_180")
         ],
         [
-            InlineKeyboardButton("⏱ 2 минуты", callback_data="timer_120"),
-            InlineKeyboardButton("⏱ 5 минут", callback_data="timer_300")
+            InlineKeyboardButton("⏱ 2 мин", callback_data="timer_120"),
+            InlineKeyboardButton("⏱ 5 мин", callback_data="timer_300")
         ],
         [
-            InlineKeyboardButton("🔙 Назад", callback_data="back_to_exercises")
+            InlineKeyboardButton("📊 Прогресс тренировки", callback_data="progress"),
+            InlineKeyboardButton("🎯 Рекомендации", callback_data="reminders")
+        ],
+        [
+            InlineKeyboardButton("🔙 К списку упражнений", callback_data="back_to_exercises"),
+            InlineKeyboardButton("🏁 Завершить", callback_data="finish")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -584,7 +585,7 @@ def show_exercise_list(update: Update, context: CallbackContext):
     return CHOOSING_EXERCISE
 
 def handle_exercise_selection(update: Update, context: CallbackContext):
-    """Обработка выбора упражнения с расширенной информацией"""
+    """Обработка выбора упражнения с таймерами в том же окне"""
     query = update.callback_query
     query.answer()
     
@@ -601,6 +602,8 @@ def handle_exercise_selection(update: Update, context: CallbackContext):
         return show_detailed_statistics_menu(update, context)
     elif data.startswith("timer_"):
         return handle_timer_selection(update, context)
+    elif data == "back_to_exercises":
+        return show_exercise_list_after_input(update, context)
     elif data.startswith("ex_"):
         # Извлекаем индекс упражнения
         exercise_index = int(data.split("_")[1])
@@ -621,7 +624,7 @@ def handle_exercise_selection(update: Update, context: CallbackContext):
         full_history = get_full_exercise_history(user_id, exercise_name)
         ascii_chart = create_simple_ascii_chart(full_history)
         
-        # Формируем расширенное сообщение
+        # Формируем расширенное сообщение с таймерами
         message_text = (
             f"💪 <b>Упражнение:</b> {exercise_name}\n\n"
             f"📊 <b>История выполнения:</b>\n{history_text}\n\n"
@@ -630,28 +633,28 @@ def handle_exercise_selection(update: Update, context: CallbackContext):
         )
         
         message_text += (
-            f"Введите вес и количество повторений:\n"
+            f"<b>Введите вес и количество повторений:</b>\n"
             f"<code>вес повторения</code>\n"
             f"Пример: <code>60 10</code>\n\n"
-            f"Или нажмите /skip чтобы пропустить"
+            f"<b>Или выберите таймер отдыха:</b>"
         )
+        
+        reply_markup = get_exercise_detail_keyboard()
         
         query.edit_message_text(
             message_text,
-            parse_mode='HTML'
+            parse_mode='HTML',
+            reply_markup=reply_markup
         )
         
         return ENTERING_EXERCISE_DATA
 
 def handle_timer_selection(update: Update, context: CallbackContext):
-    """Обработка выбора таймера"""
+    """Обработка выбора таймера с возвратом в то же окно упражнения"""
     query = update.callback_query
     query.answer()
     
     data = query.data
-    
-    if data == "back_to_exercises":
-        return show_exercise_list_after_input(update, context)
     
     if data.startswith("timer_"):
         duration = int(data.split("_")[1])
@@ -669,23 +672,36 @@ def handle_timer_selection(update: Update, context: CallbackContext):
         
         # Запускаем таймер
         result = set_timer(update, context, duration, timer_name)
+        
+        # Показываем уведомление о запуске таймера
         query.message.reply_text(result)
         
-        # Возвращаем к упражнениям
-        return show_exercise_list_after_input(update, context)
-
-def show_timer_selection(update: Update, context: CallbackContext):
-    """Показывает меню выбора таймера"""
-    reply_markup = get_timer_keyboard()
-    update.message.reply_text(
-        "⏰ <b>Выберите время для таймера отдыха:</b>",
-        parse_mode='HTML',
-        reply_markup=reply_markup
-    )
-    return TIMER_SELECTION
+        # НЕ возвращаемся к списку упражнений, остаемся в том же окне
+        # Просто обновляем сообщение, чтобы показать, что таймер запущен
+        current_message = query.message.text
+        if "⏰ Таймер" not in current_message:
+            updated_message = current_message + f"\n\n⏰ <b>Таймер {timer_name} запущен!</b>"
+        else:
+            # Если таймер уже был запущен, заменяем старую запись
+            lines = current_message.split('\n')
+            # Удаляем последние строки, содержащие информацию о таймере
+            while lines and "⏰ Таймер" in lines[-1]:
+                lines.pop()
+            updated_message = '\n'.join(lines) + f"\n\n⏰ <b>Таймер {timer_name} запущен!</b>"
+        
+        try:
+            query.edit_message_text(
+                updated_message,
+                parse_mode='HTML',
+                reply_markup=query.message.reply_markup
+            )
+        except:
+            pass  # Если не удалось обновить сообщение, ничего страшного
+        
+        return ENTERING_EXERCISE_DATA
 
 def handle_exercise_input(update: Update, context: CallbackContext):
-    """Обработка ввода данных упражнения с сравнением прогресса"""
+    """Обработка ввода данных упражнения с возвратом к тому же интерфейсу"""
     user_id = str(update.effective_user.id)
     text = update.message.text.strip()
     user_data = load_user_data()
@@ -744,18 +760,51 @@ def handle_exercise_input(update: Update, context: CallbackContext):
     previous_history = [h for h in exercise_history if h['weight'] != weight or h['reps'] != reps]
     progress_text = get_progress_comparison(weight, reps, previous_history)
     
-    # Показываем обновленный список упражнений
-    update.message.reply_text(
-        f"✅ Сохранено: {exercise_name}\n"
-        f"Результат: {weight}кг × {reps}повт.\n"
+    # Показываем обновленное сообщение с тем же интерфейсом
+    day = context.user_data.get('current_day')
+    exercises = TRAINING_PROGRAMS[day]['exercises']
+    exercise_name = exercises[exercise_index]
+    
+    # Обновляем историю
+    exercise_history = get_exercise_history(user_id, exercise_name)
+    history_text = format_exercise_history(exercise_history)
+    
+    # Получаем рекомендации
+    recommendations = generate_smart_recommendations(user_id, exercise_name)
+    
+    # Получаем ASCII-график
+    full_history = get_full_exercise_history(user_id, exercise_name)
+    ascii_chart = create_simple_ascii_chart(full_history)
+    
+    # Формируем сообщение
+    message_text = (
+        f"💪 <b>Упражнение:</b> {exercise_name}\n\n"
+        f"✅ <b>Сохранено:</b> {weight}кг × {reps}повт.\n"
         f"{progress_text}\n\n"
-        f"Выберите следующее упражнение:"
+        f"📊 <b>История выполнения:</b>\n{history_text}\n\n"
+        f"{ascii_chart}\n\n"
+        f"🎯 <b>Рекомендации:</b>\n{recommendations}\n\n"
     )
     
-    return show_exercise_list_after_input(update, context)
+    message_text += (
+        f"<b>Введите вес и количество повторений:</b>\n"
+        f"<code>вес повторения</code>\n"
+        f"Пример: <code>60 10</code>\n\n"
+        f"<b>Или выберите таймер отдыха:</b>"
+    )
+    
+    reply_markup = get_exercise_detail_keyboard()
+    
+    update.message.reply_text(
+        message_text,
+        parse_mode='HTML',
+        reply_markup=reply_markup
+    )
+    
+    return ENTERING_EXERCISE_DATA
 
 def skip_exercise(update: Update, context: CallbackContext):
-    """Пропуск упражнения"""
+    """Пропуск упражнения с возвратом к списку"""
     user_id = str(update.effective_user.id)
     user_data = load_user_data()
     
@@ -769,7 +818,7 @@ def skip_exercise(update: Update, context: CallbackContext):
     exercises_list = TRAINING_PROGRAMS[day]['exercises']
     exercise_name = exercises_list[exercise_index]
     
-    update.message.reply_text(f"⏭️ Упражнение пропущено: {exercise_name}\n\nВы можете вернуться к нему позже.")
+    update.message.reply_text(f"⏭️ Упражнение пропущено: {exercise_name}")
     return show_exercise_list_after_input(update, context)
 
 def show_exercise_list_after_input(update: Update, context: CallbackContext):
@@ -813,11 +862,35 @@ def show_current_progress(update: Update, context: CallbackContext):
     
     if update.callback_query:
         update.callback_query.message.reply_text(progress_text, parse_mode='HTML')
-        completed_exercises = current_session.get('completed_exercises', [])
-        reply_markup = get_exercise_keyboard(day, completed_exercises, user_id)
-        update.callback_query.message.reply_text("🎯 <b>Выберите упражнение:</b>", parse_mode='HTML', reply_markup=reply_markup)
+        # Возвращаем к тому же интерфейсу упражнения
+        exercise_index = context.user_data.get('current_exercise')
+        if exercise_index is not None:
+            day = context.user_data.get('current_day')
+            exercises = TRAINING_PROGRAMS[day]['exercises']
+            exercise_name = exercises[exercise_index]
+            
+            user_id = str(update.effective_user.id)
+            exercise_history = get_exercise_history(user_id, exercise_name)
+            history_text = format_exercise_history(exercise_history)
+            recommendations = generate_smart_recommendations(user_id, exercise_name)
+            full_history = get_full_exercise_history(user_id, exercise_name)
+            ascii_chart = create_simple_ascii_chart(full_history)
+            
+            message_text = (
+                f"💪 <b>Упражнение:</b> {exercise_name}\n\n"
+                f"📊 <b>История выполнения:</b>\n{history_text}\n\n"
+                f"{ascii_chart}\n\n"
+                f"🎯 <b>Рекомендации:</b>\n{recommendations}\n\n"
+                f"<b>Введите вес и количество повторений:</b>\n"
+                f"<code>вес повторения</code>\n"
+                f"Пример: <code>60 10</code>\n\n"
+                f"<b>Или выберите таймер отдыха:</b>"
+            )
+            
+            reply_markup = get_exercise_detail_keyboard()
+            update.callback_query.message.reply_text(message_text, parse_mode='HTML', reply_markup=reply_markup)
     
-    return CHOOSING_EXERCISE
+    return ENTERING_EXERCISE_DATA
 
 def show_reminders(update: Update, context: CallbackContext):
     """Показывает умные напоминания"""
@@ -829,18 +902,35 @@ def show_reminders(update: Update, context: CallbackContext):
     else:
         update.callback_query.message.reply_text("✅ Все отлично! Продолжайте в том же духе!", parse_mode='HTML')
     
-    # Возвращаем к выбору упражнений
-    day = context.user_data.get('current_day')
-    user_data = load_user_data()
-    if user_id in user_data and 'current_session' in user_data[user_id]:
-        completed_exercises = user_data[user_id]['current_session'].get('completed_exercises', [])
-    else:
-        completed_exercises = []
+    # Возвращаем к тому же интерфейсу упражнения
+    exercise_index = context.user_data.get('current_exercise')
+    if exercise_index is not None:
+        day = context.user_data.get('current_day')
+        exercises = TRAINING_PROGRAMS[day]['exercises']
+        exercise_name = exercises[exercise_index]
+        
+        user_id = str(update.effective_user.id)
+        exercise_history = get_exercise_history(user_id, exercise_name)
+        history_text = format_exercise_history(exercise_history)
+        recommendations = generate_smart_recommendations(user_id, exercise_name)
+        full_history = get_full_exercise_history(user_id, exercise_name)
+        ascii_chart = create_simple_ascii_chart(full_history)
+        
+        message_text = (
+            f"💪 <b>Упражнение:</b> {exercise_name}\n\n"
+            f"📊 <b>История выполнения:</b>\n{history_text}\n\n"
+            f"{ascii_chart}\n\n"
+            f"🎯 <b>Рекомендации:</b>\n{recommendations}\n\n"
+            f"<b>Введите вес и количество повторений:</b>\n"
+            f"<code>вес повторения</code>\n"
+            f"Пример: <code>60 10</code>\n\n"
+            f"<b>Или выберите таймер отдыха:</b>"
+        )
+        
+        reply_markup = get_exercise_detail_keyboard()
+        update.callback_query.message.reply_text(message_text, parse_mode='HTML', reply_markup=reply_markup)
     
-    reply_markup = get_exercise_keyboard(day, completed_exercises, user_id)
-    update.callback_query.message.reply_text("🎯 <b>Выберите упражнение:</b>", parse_mode='HTML', reply_markup=reply_markup)
-    
-    return CHOOSING_EXERCISE
+    return ENTERING_EXERCISE_DATA
 
 def show_detailed_statistics_menu(update: Update, context: CallbackContext):
     """Показывает меню детальной статистики"""
@@ -876,7 +966,37 @@ def show_exercise_statistics(update: Update, context: CallbackContext):
     data = query.data
     
     if data == "back_to_exercises":
-        return show_exercise_list_after_input(update, context)
+        # Возвращаем к интерфейсу упражнения
+        exercise_index = context.user_data.get('current_exercise')
+        if exercise_index is not None:
+            day = context.user_data.get('current_day')
+            exercises = TRAINING_PROGRAMS[day]['exercises']
+            exercise_name = exercises[exercise_index]
+            
+            exercise_history = get_exercise_history(user_id, exercise_name)
+            history_text = format_exercise_history(exercise_history)
+            recommendations = generate_smart_recommendations(user_id, exercise_name)
+            full_history = get_full_exercise_history(user_id, exercise_name)
+            ascii_chart = create_simple_ascii_chart(full_history)
+            
+            message_text = (
+                f"💪 <b>Упражнение:</b> {exercise_name}\n\n"
+                f"📊 <b>История выполнения:</b>\n{history_text}\n\n"
+                f"{ascii_chart}\n\n"
+                f"🎯 <b>Рекомендации:</b>\n{recommendations}\n\n"
+                f"<b>Введите вес и количество повторений:</b>\n"
+                f"<code>вес повторения</code>\n"
+                f"Пример: <code>60 10</code>\n\n"
+                f"<b>Или выберите таймер отдыха:</b>"
+            )
+            
+            reply_markup = get_exercise_detail_keyboard()
+            query.edit_message_text(
+                message_text,
+                parse_mode='HTML',
+                reply_markup=reply_markup
+            )
+        return ENTERING_EXERCISE_DATA
     
     if data.startswith("stat_"):
         exercise_index = int(data.split("_")[1])
@@ -1110,8 +1230,8 @@ def help_command(update: Update, context: CallbackContext):
 <b>Как работать с ботом:</b>
 1. Нажмите /train
 2. Выберите день тренировки
-3. Используйте таймеры для отдыха между подходами
-4. Вводите данные упражнений
+3. Выберите упражнение - откроется окно с таймерами
+4. Вводите данные упражнений или запускайте таймеры отдыха
 5. После тренировки запишите вес
 6. Следите за прогрессом в /progress
 
@@ -1177,19 +1297,17 @@ def main():
             states={
                 CHOOSING_DAY: [MessageHandler(Filters.regex('^(День А|День Б)$'), show_exercise_list)],
                 CHOOSING_EXERCISE: [
-                    CallbackQueryHandler(handle_exercise_selection, pattern='^(ex_|progress|finish|reminders|stats|timer_)'),
-                    CallbackQueryHandler(show_exercise_statistics, pattern='^(stat_|back_to_exercises)')
+                    CallbackQueryHandler(handle_exercise_selection, pattern='^(ex_|progress|finish|reminders|stats|timer_|back_to_exercises)'),
+                    CallbackQueryHandler(show_exercise_statistics, pattern='^(stat_)')
                 ],
                 ENTERING_EXERCISE_DATA: [
                     MessageHandler(Filters.text & ~Filters.command, handle_exercise_input),
-                    CommandHandler('skip', skip_exercise)
+                    CommandHandler('skip', skip_exercise),
+                    CallbackQueryHandler(handle_exercise_selection, pattern='^(progress|finish|reminders|stats|timer_|back_to_exercises)')
                 ],
                 WEIGHING: [
                     MessageHandler(Filters.text & ~Filters.command, handle_weight_input),
                     CommandHandler('skip', skip_weight)
-                ],
-                TIMER_SELECTION: [
-                    CallbackQueryHandler(handle_timer_selection, pattern='^(timer_|back_to_exercises)')
                 ]
             },
             fallbacks=[CommandHandler('cancel', cancel)],
