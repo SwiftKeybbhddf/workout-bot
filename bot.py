@@ -152,7 +152,6 @@ def get_weight_progress(weight_history):
         return "⚖️ Вес стабилен"
 
 # ========== ФУНКЦИИ ТАЙМЕРА ==========
-# ========== ФУНКЦИИ ТАЙМЕРА ==========
 def timer_callback(context: CallbackContext):
     """Колбэк для завершения таймера"""
     job = context.job
@@ -256,7 +255,7 @@ def get_exercise_history(user_id, exercise_name, limit=3):
     user_data = load_user_data()
     
     if user_id not in user_data or not user_data[user_id].get('history'):
-        return None
+        return []
     
     history = user_data[user_id]['history']
     exercise_history = []
@@ -792,9 +791,11 @@ def handle_exercise_input(update: Update, context: CallbackContext):
     save_user_data(user_data)
     
     # Добавляем сравнение с предыдущим результатом
+    # ИСПРАВЛЕНИЕ: проверяем, что exercise_history не None
     exercise_history = get_exercise_history(user_id, exercise_name)
-    # Исключаем только что добавленную запись для сравнения
-    previous_history = [h for h in exercise_history if h['weight'] != weight or h['reps'] != reps]
+    previous_history = []
+    if exercise_history is not None:
+        previous_history = [h for h in exercise_history if h['weight'] != weight or h['reps'] != reps]
     progress_text = get_progress_comparison(weight, reps, previous_history)
     
     # Показываем обновленное сообщение с тем же интерфейсом
