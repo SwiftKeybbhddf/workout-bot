@@ -2,7 +2,6 @@ import logging
 import json
 import os
 import io
-import asyncio
 import signal
 import sys
 from datetime import datetime, timedelta
@@ -154,60 +153,72 @@ def get_weight_progress(weight_history):
         return "⚖️ Вес стабилен"
 
 # ========== ФУНКЦИИ ТАЙМЕРА ==========
-async def start_timer(context: CallbackContext, chat_id: int, duration: int, timer_name: str):
-    """Запускает таймер обратного отсчета"""
+def start_timer_sync(context: CallbackContext):
+    """Синхронная функция для запуска таймера обратного отсчета"""
     job = context.job
+    chat_id = job.context['chat_id']
+    timer_name = job.context['timer_name']
+    remaining = job.context.get('remaining', job.context['duration'])
     
-    # Отправляем начальное сообщение
-    message = await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"⏰ Таймер {timer_name} запущен!\nОсталось: {duration} сек."
-    )
+    if remaining <= 0:
+        # Таймер завершен
+        try:
+            context.bot.send_message(
+                chat_id=chat_id,
+                text=f"🎯 {timer_name} завершен! Можно делать следующий подход! 💪"
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки сообщения о завершении таймера: {e}")
+        return
     
-    # Сохраняем ID сообщения для обновления
-    job.context['message_id'] = message.message_id
-    
-    # Обратный отсчет
-    for remaining in range(duration - 1, 0, -1):
-        if remaining % 30 == 0 or remaining <= 10:  # Обновляем каждые 30 сек или последние 10 сек
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=job.context['message_id'],
-                    text=f"⏰ Таймер {timer_name}\nОсталось: {remaining} сек."
-                )
-            except:
-                pass  # Игнорируем ошибки редактирования
-        
-        await asyncio.sleep(1)
-    
-    # Таймер завершен
+    # Отправляем или обновляем сообщение
     try:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=job.context['message_id'],
-            text=f"🔔 Таймер {timer_name} завершен! 🎯"
-        )
-    except:
-        pass
+        if job.context.get('message_id'):
+            # Обновляем существующее сообщение
+            context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=job.context['message_id'],
+                text=f"⏰ Таймер {timer_name}\nОсталось: {remaining} сек."
+            )
+        else:
+            # Создаем новое сообщение
+            message = context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⏰ Таймер {timer_name}\nОсталось: {remaining} сек."
+            )
+            job.context['message_id'] = message.message_id
+    except Exception as e:
+        logger.error(f"Ошибка обновления таймера: {e}")
     
-    # Отправляем уведомление
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"🎯 {timer_name} завершен! Можно делать следующий подход! 💪"
-    )
+    # Уменьшаем оставшееся время и планируем следующий запуск
+    job.context['remaining'] = remaining - 1
+    if remaining > 1:
+        # Планируем следующий шаг через 1 секунду
+        context.job_queue.run_once(
+            start_timer_sync,
+            1,
+            context=job.context,
+            name=f"timer_{chat_id}_{remaining-1}"
+        )
 
 def set_timer(update: Update, context: CallbackContext, duration: int, timer_name: str):
     """Устанавливает таймер через job queue"""
     chat_id = update.effective_message.chat_id
     
     # Создаем задачу для таймера
-    job_context = {'chat_id': chat_id, 'timer_name': timer_name}
+    job_context = {
+        'chat_id': chat_id,
+        'timer_name': timer_name,
+        'duration': duration,
+        'remaining': duration
+    }
+    
+    # Запускаем первый шаг таймера немедленно
     context.job_queue.run_once(
-        lambda ctx: start_timer(ctx, chat_id, duration, timer_name),
-        duration,
+        start_timer_sync,
+        0,
         context=job_context,
-        name=str(chat_id)
+        name=f"timer_{chat_id}_{duration}"
     )
     
     return f"⏰ Таймер {timer_name} установлен на {duration} секунд"
