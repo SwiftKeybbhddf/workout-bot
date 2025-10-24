@@ -1,7 +1,6 @@
 import logging
 import json
 import os
-import io
 import signal
 import sys
 from datetime import datetime, timedelta
@@ -153,31 +152,42 @@ def get_weight_progress(weight_history):
         return "⚖️ Вес стабилен"
 
 # ========== ФУНКЦИИ ТАЙМЕРА ==========
-def start_timer_sync(context: CallbackContext):
-    """Синхронная функция для запуска таймера обратного отсчета"""
+# ========== ФУНКЦИИ ТАЙМЕРА ==========
+def timer_callback(context: CallbackContext):
+    """Колбэк для завершения таймера"""
     job = context.job
     chat_id = job.context['chat_id']
     timer_name = job.context['timer_name']
-    remaining = job.context.get('remaining', job.context['duration'])
+    
+    try:
+        # Отправляем уведомление о завершении таймера
+        context.bot.send_message(
+            chat_id=chat_id,
+            text=f"🎯 {timer_name} завершен! Можно делать следующий подход! 💪"
+        )
+        print(f"✅ Уведомление о завершении таймера отправлено в чат {chat_id}")
+    except Exception as e:
+        print(f"❌ Ошибка отправки уведомления таймера: {e}")
+        logger.error(f"Ошибка отправки уведомления таймера: {e}")
+
+def start_timer_progress(context: CallbackContext):
+    """Функция для обновления прогресса таймера"""
+    job = context.job
+    chat_id = job.context['chat_id']
+    timer_name = job.context['timer_name']
+    remaining = job.context['remaining']
+    message_id = job.context.get('message_id')
     
     if remaining <= 0:
-        # Таймер завершен
-        try:
-            context.bot.send_message(
-                chat_id=chat_id,
-                text=f"🎯 {timer_name} завершен! Можно делать следующий подход! 💪"
-            )
-        except Exception as e:
-            logger.error(f"Ошибка отправки сообщения о завершении таймера: {e}")
+        # Таймер завершен - эта функция больше не вызывается
         return
     
-    # Отправляем или обновляем сообщение
     try:
-        if job.context.get('message_id'):
+        if message_id:
             # Обновляем существующее сообщение
             context.bot.edit_message_text(
                 chat_id=chat_id,
-                message_id=job.context['message_id'],
+                message_id=message_id,
                 text=f"⏰ Таймер {timer_name}\nОсталось: {remaining} сек."
             )
         else:
@@ -187,40 +197,57 @@ def start_timer_sync(context: CallbackContext):
                 text=f"⏰ Таймер {timer_name}\nОсталось: {remaining} сек."
             )
             job.context['message_id'] = message.message_id
+        
+        # Уменьшаем оставшееся время
+        job.context['remaining'] = remaining - 1
+        
     except Exception as e:
+        print(f"❌ Ошибка обновления таймера: {e}")
         logger.error(f"Ошибка обновления таймера: {e}")
-    
-    # Уменьшаем оставшееся время и планируем следующий запуск
-    job.context['remaining'] = remaining - 1
-    if remaining > 1:
-        # Планируем следующий шаг через 1 секунду
-        context.job_queue.run_once(
-            start_timer_sync,
-            1,
-            context=job.context,
-            name=f"timer_{chat_id}_{remaining-1}"
-        )
 
 def set_timer(update: Update, context: CallbackContext, duration: int, timer_name: str):
     """Устанавливает таймер через job queue"""
     chat_id = update.effective_message.chat_id
     
-    # Создаем задачу для таймера
-    job_context = {
+    # Создаем контекст для основного таймера (завершение)
+    timer_job_context = {
+        'chat_id': chat_id,
+        'timer_name': timer_name
+    }
+    
+    # Создаем контекст для прогресса таймера
+    progress_job_context = {
         'chat_id': chat_id,
         'timer_name': timer_name,
-        'duration': duration,
         'remaining': duration
     }
     
-    # Запускаем первый шаг таймера немедленно
-    context.job_queue.run_once(
-        start_timer_sync,
-        0,
-        context=job_context,
-        name=f"timer_{chat_id}_{duration}"
+    # Запускаем прогресс таймера с интервалом 1 секунда
+    progress_job = context.job_queue.run_repeating(
+        start_timer_progress,
+        interval=1,
+        first=0,
+        context=progress_job_context,
+        name=f"timer_progress_{chat_id}"
     )
     
+    # Запускаем основной таймер для завершения
+    context.job_queue.run_once(
+        timer_callback,
+        duration,
+        context=timer_job_context,
+        name=f"timer_end_{chat_id}"
+    )
+    
+    # Также останавливаем прогресс таймера после завершения
+    context.job_queue.run_once(
+        lambda ctx: progress_job.schedule_removal(),
+        duration,
+        context={},
+        name=f"timer_cleanup_{chat_id}"
+    )
+    
+    print(f"✅ Таймер {timer_name} установлен на {duration} секунд для чата {chat_id}")
     return f"⏰ Таймер {timer_name} установлен на {duration} секунд"
 
 # ========== ФУНКЦИИ АНАЛИТИКИ И РЕКОМЕНДАЦИЙ ==========
@@ -687,8 +714,7 @@ def handle_timer_selection(update: Update, context: CallbackContext):
         # Показываем уведомление о запуске таймера
         query.message.reply_text(result)
         
-        # НЕ возвращаемся к списку упражнений, остаемся в том же окне
-        # Просто обновляем сообщение, чтобы показать, что таймер запущен
+        # Обновляем сообщение, чтобы показать, что таймер запущен
         current_message = query.message.text
         if "⏰ Таймер" not in current_message:
             updated_message = current_message + f"\n\n⏰ <b>Таймер {timer_name} запущен!</b>"
@@ -706,8 +732,8 @@ def handle_timer_selection(update: Update, context: CallbackContext):
                 parse_mode='HTML',
                 reply_markup=query.message.reply_markup
             )
-        except:
-            pass  # Если не удалось обновить сообщение, ничего страшного
+        except Exception as e:
+            print(f"⚠️ Не удалось обновить сообщение: {e}")
         
         return ENTERING_EXERCISE_DATA
 
