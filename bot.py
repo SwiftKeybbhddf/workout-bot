@@ -711,7 +711,10 @@ def handle_timer_selection(update: Update, context: CallbackContext):
         result = set_timer(update, context, duration, timer_name)
         
         # Показываем уведомление о запуске таймера
-        query.message.reply_text(result)
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=result
+        )
         
         # Обновляем сообщение, чтобы показать, что таймер запущен
         current_message = query.message.text
@@ -856,7 +859,14 @@ def skip_exercise(update: Update, context: CallbackContext):
     exercises_list = TRAINING_PROGRAMS[day]['exercises']
     exercise_name = exercises_list[exercise_index]
     
-    update.message.reply_text(f"⏭️ Упражнение пропущено: {exercise_name}")
+    if update.message:
+        update.message.reply_text(f"⏭️ Упражнение пропущено: {exercise_name}")
+    else:
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"⏭️ Упражнение пропущено: {exercise_name}"
+        )
+    
     return show_exercise_list_after_input(update, context)
 
 def show_exercise_list_after_input(update: Update, context: CallbackContext):
@@ -871,7 +881,21 @@ def show_exercise_list_after_input(update: Update, context: CallbackContext):
         completed_exercises = []
     
     reply_markup = get_exercise_keyboard(day, completed_exercises, user_id)
-    update.message.reply_text("🎯 <b>Выберите упражнение:</b>", parse_mode='HTML', reply_markup=reply_markup)
+    
+    # Проверяем тип обновления (сообщение или callback)
+    if update.message:
+        update.message.reply_text("🎯 <b>Выберите упражнение:</b>", parse_mode='HTML', reply_markup=reply_markup)
+    elif update.callback_query:
+        update.callback_query.edit_message_text("🎯 <b>Выберите упражнение:</b>", parse_mode='HTML', reply_markup=reply_markup)
+    else:
+        # Если ни message, ни callback_query не доступны, используем context
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="🎯 <b>Выберите упражнение:</b>",
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
     return CHOOSING_EXERCISE
 
 def show_current_progress(update: Update, context: CallbackContext):
@@ -935,10 +959,19 @@ def show_reminders(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
     reminders = check_workout_reminders(user_id)
     
-    if reminders:
-        update.callback_query.message.reply_text(reminders, parse_mode='HTML')
-    else:
-        update.callback_query.message.reply_text("✅ Все отлично! Продолжайте в том же духе!", parse_mode='HTML')
+    if update.callback_query:
+        if reminders:
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=reminders,
+                parse_mode='HTML'
+            )
+        else:
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="✅ Все отлично! Продолжайте в том же духе!",
+                parse_mode='HTML'
+            )
     
     # Возвращаем к тому же интерфейсу упражнения
     exercise_index = context.user_data.get('current_exercise')
@@ -966,10 +999,15 @@ def show_reminders(update: Update, context: CallbackContext):
         )
         
         reply_markup = get_exercise_detail_keyboard()
-        update.callback_query.message.reply_text(message_text, parse_mode='HTML', reply_markup=reply_markup)
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=message_text,
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
     
     return ENTERING_EXERCISE_DATA
-
+    
 def show_detailed_statistics_menu(update: Update, context: CallbackContext):
     """Показывает меню детальной статистики"""
     user_id = str(update.effective_user.id)
@@ -1072,7 +1110,10 @@ def finish_training_session(update: Update, context: CallbackContext):
     
     if user_id not in user_data or 'current_session' not in user_data[user_id]:
         if update.callback_query:
-            update.callback_query.message.reply_text("❌ Активная тренировка не найдена.")
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Активная тренировка не найдена."
+            )
         return ConversationHandler.END
     
     current_session = user_data[user_id]['current_session']
@@ -1080,7 +1121,10 @@ def finish_training_session(update: Update, context: CallbackContext):
     
     if not current_session['exercises']:
         if update.callback_query:
-            update.callback_query.message.reply_text("❌ Вы не выполнили ни одного упражнения. Тренировка отменена.")
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Вы не выполнили ни одного упражнения. Тренировка отменена."
+            )
         del user_data[user_id]['current_session']
         save_user_data(user_data)
         return ConversationHandler.END
@@ -1106,9 +1150,19 @@ def finish_training_session(update: Update, context: CallbackContext):
     summary += "\nХотите записать текущий вес?\nВведите вес в килограммах или /skip чтобы пропустить"
     
     if update.callback_query:
-        update.callback_query.message.reply_text(summary, parse_mode='HTML')
-    else:
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=summary,
+            parse_mode='HTML'
+        )
+    elif update.message:
         update.message.reply_text(summary, parse_mode='HTML')
+    else:
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=summary,
+            parse_mode='HTML'
+        )
     
     return WEIGHING
 
