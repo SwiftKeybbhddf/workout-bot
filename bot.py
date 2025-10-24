@@ -2,7 +2,7 @@ import logging
 import json
 import os
 import io
-import base64
+import asyncio
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -59,7 +59,7 @@ TRAINING_PROGRAMS = {
 }
 
 # Состояния разговора
-CHOOSING_DAY, CHOOSING_EXERCISE, ENTERING_EXERCISE_DATA = range(3)
+CHOOSING_DAY, CHOOSING_EXERCISE, ENTERING_EXERCISE_DATA, WEIGHING, TIMER_SELECTION = range(5)
 DATA_FILE = 'user_data.json'
 
 # ========== ФУНКЦИИ РАБОТЫ С ДАННЫМИ ==========
@@ -80,6 +80,115 @@ def save_user_data(data):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"Ошибка сохранения данных: {e}")
+
+def get_weight_history(user_id):
+    """Получает историю взвешиваний пользователя"""
+    user_data = load_user_data()
+    if user_id not in user_data:
+        return []
+    return user_data[user_id].get('weight_history', [])
+
+def save_weight(user_id, weight):
+    """Сохраняет вес пользователя"""
+    user_data = load_user_data()
+    if user_id not in user_data:
+        user_data[user_id] = {'username': '', 'history': [], 'weight_history': []}
+    
+    weight_record = {
+        'weight': weight,
+        'date': datetime.now().isoformat(),
+        'timestamp': datetime.now().strftime('%d.%m.%Y %H:%M')
+    }
+    
+    user_data[user_id]['weight_history'].append(weight_record)
+    save_user_data(user_data)
+    return weight_record
+
+def format_weight_history(weight_history):
+    """Форматирует историю взвешиваний для отображения"""
+    if not weight_history:
+        return "📊 История взвешиваний пуста"
+    
+    lines = []
+    for i, record in enumerate(weight_history[-5:], 1):  # Последние 5 записей
+        lines.append(f"{i}. {record['timestamp']}: {record['weight']}кг")
+    
+    return "📊 История взвешиваний:\n" + "\n".join(lines)
+
+def get_weight_progress(weight_history):
+    """Анализирует прогресс веса"""
+    if len(weight_history) < 2:
+        return "💡 Продолжайте взвешиваться для отслеживания прогресса"
+    
+    current = weight_history[-1]['weight']
+    previous = weight_history[-2]['weight']
+    difference = current - previous
+    
+    if difference > 0:
+        return f"📈 Набор массы: +{difference:.1f}кг"
+    elif difference < 0:
+        return f"📉 Снижение веса: {difference:.1f}кг"
+    else:
+        return "⚖️ Вес стабилен"
+
+# ========== ФУНКЦИИ ТАЙМЕРА ==========
+async def start_timer(context: CallbackContext, chat_id: int, duration: int, timer_name: str):
+    """Запускает таймер обратного отсчета"""
+    job = context.job
+    
+    # Отправляем начальное сообщение
+    message = await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"⏰ Таймер {timer_name} запущен!\nОсталось: {duration} сек."
+    )
+    
+    # Сохраняем ID сообщения для обновления
+    job.context['message_id'] = message.message_id
+    
+    # Обратный отсчет
+    for remaining in range(duration - 1, 0, -1):
+        if remaining % 30 == 0 or remaining <= 10:  # Обновляем каждые 30 сек или последние 10 сек
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=job.context['message_id'],
+                    text=f"⏰ Таймер {timer_name}\nОсталось: {remaining} сек."
+                )
+            except:
+                pass  # Игнорируем ошибки редактирования
+        
+        await asyncio.sleep(1)
+    
+    # Таймер завершен
+    try:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=job.context['message_id'],
+            text=f"🔔 Таймер {timer_name} завершен! 🎯"
+        )
+    except:
+        pass
+    
+    # Отправляем уведомление
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"🎯 {timer_name} завершен! Можно делать следующий подход! 💪"
+    )
+
+def set_timer(update: Update, context: CallbackContext, duration: int, timer_name: str):
+    """Устанавливает таймер через job queue"""
+    chat_id = update.effective_message.chat_id
+    
+    # Создаем задачу для таймера
+    job_context = {'chat_id': chat_id, 'timer_name': timer_name}
+    context.job_queue.run_once(
+        lambda ctx: start_timer(ctx, chat_id, duration, timer_name),
+        duration,
+        context=job_context,
+        name=str(chat_id)
+    )
+    
+    return f"⏰ Таймер {timer_name} установлен на {duration} секунд"
 
 # ========== ФУНКЦИИ АНАЛИТИКИ И РЕКОМЕНДАЦИЙ ==========
 def get_exercise_history(user_id, exercise_name, limit=3):
@@ -340,6 +449,10 @@ def get_exercise_keyboard(day, completed_exercises, user_id=None):
     
     # Добавляем расширенные кнопки управления
     keyboard.append([
+        InlineKeyboardButton("⏱ 1.5 мин", callback_data="timer_90"),
+        InlineKeyboardButton("⏱ 3 мин", callback_data="timer_180")
+    ])
+    keyboard.append([
         InlineKeyboardButton("📊 Прогресс", callback_data="progress"),
         InlineKeyboardButton("🎯 Рекомендации", callback_data="reminders")
     ])
@@ -348,6 +461,23 @@ def get_exercise_keyboard(day, completed_exercises, user_id=None):
         InlineKeyboardButton("🏁 Завершить", callback_data="finish")
     ])
     
+    return InlineKeyboardMarkup(keyboard)
+
+def get_timer_keyboard():
+    """Создает клавиатуру для выбора таймера"""
+    keyboard = [
+        [
+            InlineKeyboardButton("⏱ 1.5 минуты", callback_data="timer_90"),
+            InlineKeyboardButton("⏱ 3 минуты", callback_data="timer_180")
+        ],
+        [
+            InlineKeyboardButton("⏱ 2 минуты", callback_data="timer_120"),
+            InlineKeyboardButton("⏱ 5 минут", callback_data="timer_300")
+        ],
+        [
+            InlineKeyboardButton("🔙 Назад", callback_data="back_to_exercises")
+        ]
+    ]
     return InlineKeyboardMarkup(keyboard)
 
 # ========== ОСНОВНЫЕ ФУНКЦИИ БОТА ==========
@@ -359,18 +489,17 @@ def start(update: Update, context: CallbackContext):
 
 🏋️‍♂️ Добро пожаловать в трекер тренировок!
 
-Я помогу вам отслеживать прогресс по программе фуллбади 3 раза в неделю.
-
-📋 <b>Новые возможности:</b>
+<b>Новые возможности:</b>
+• ⏱ <b>Таймеры отдыха</b> - 1.5, 3 минуты и другие
+• ⚖️ <b>Трекер веса</b> - отслеживание прогресса массы тела
 • 📊 <b>Графики прогресса</b> - визуализация ваших результатов
 • 🎯 <b>Умные рекомендации</b> - персонализированные советы
-• 🔔 <b>Авто-напоминания</b> - когда пора увеличивать вес
-• 📈 <b>Детальная статистика</b> - полная аналитика по упражнениям
 
-📋 <b>Основные команды:</b>
+<b>Основные команды:</b>
 /train - Начать новую тренировку
 /progress - Посмотреть историю тренировок
 /stats - Статистика прогресса
+/weight - Записать текущий вес
 /help - Помощь по использованию
     """
     update.message.reply_text(welcome_text, parse_mode='HTML')
@@ -407,7 +536,7 @@ def show_exercise_list(update: Update, context: CallbackContext):
     
     user_data = load_user_data()
     if user_id not in user_data:
-        user_data[user_id] = {'username': update.effective_user.first_name, 'history': []}
+        user_data[user_id] = {'username': update.effective_user.first_name, 'history': [], 'weight_history': []}
     
     context.user_data['current_day'] = day
     user_data[user_id]['current_session'] = {'day': day, 'exercises': [], 'start_time': datetime.now().isoformat()}
@@ -448,6 +577,8 @@ def handle_exercise_selection(update: Update, context: CallbackContext):
         return show_reminders(update, context)
     elif data == "stats":
         return show_detailed_statistics_menu(update, context)
+    elif data.startswith("timer_"):
+        return handle_timer_selection(update, context)
     elif data.startswith("ex_"):
         # Извлекаем индекс упражнения
         exercise_index = int(data.split("_")[1])
@@ -489,6 +620,47 @@ def handle_exercise_selection(update: Update, context: CallbackContext):
         )
         
         return ENTERING_EXERCISE_DATA
+
+def handle_timer_selection(update: Update, context: CallbackContext):
+    """Обработка выбора таймера"""
+    query = update.callback_query
+    query.answer()
+    
+    data = query.data
+    
+    if data == "back_to_exercises":
+        return show_exercise_list_after_input(update, context)
+    
+    if data.startswith("timer_"):
+        duration = int(data.split("_")[1])
+        
+        if duration == 90:
+            timer_name = "1.5 минуты"
+        elif duration == 120:
+            timer_name = "2 минуты"
+        elif duration == 180:
+            timer_name = "3 минуты"
+        elif duration == 300:
+            timer_name = "5 минут"
+        else:
+            timer_name = f"{duration} секунд"
+        
+        # Запускаем таймер
+        result = set_timer(update, context, duration, timer_name)
+        query.message.reply_text(result)
+        
+        # Возвращаем к упражнениям
+        return show_exercise_list_after_input(update, context)
+
+def show_timer_selection(update: Update, context: CallbackContext):
+    """Показывает меню выбора таймера"""
+    reply_markup = get_timer_keyboard()
+    update.message.reply_text(
+        "⏰ <b>Выберите время для таймера отдыха:</b>",
+        parse_mode='HTML',
+        reply_markup=reply_markup
+    )
+    return TIMER_SELECTION
 
 def handle_exercise_input(update: Update, context: CallbackContext):
     """Обработка ввода данных упражнения с сравнением прогресса"""
@@ -714,7 +886,7 @@ def show_exercise_statistics(update: Update, context: CallbackContext):
         )
 
 def finish_training_session(update: Update, context: CallbackContext):
-    """Завершение тренировки"""
+    """Завершение тренировки с предложением взвеситься"""
     user_id = str(update.effective_user.id)
     user_data = load_user_data()
     
@@ -743,20 +915,91 @@ def finish_training_session(update: Update, context: CallbackContext):
     
     total_exercises = len(TRAINING_PROGRAMS[day]['exercises'])
     completed_count = len(current_session['exercises'])
-    summary += f"\n💪 Выполнено: {completed_count}/{total_exercises} упражнений\n\nОтличная работа! Следующая тренировка через 1-2 дня."
+    summary += f"\n💪 Выполнено: {completed_count}/{total_exercises} упражнений\n\n"
     
-    keyboard = [["/train", "/progress"], ["/stats", "/help"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    # Добавляем предложение взвеситься
+    weight_history = get_weight_history(user_id)
+    if weight_history:
+        last_weight = weight_history[-1]['weight']
+        summary += f"⚖️ Ваш последний вес: {last_weight}кг\n"
+    
+    summary += "\nХотите записать текущий вес?\nВведите вес в килограммах или /skip чтобы пропустить"
     
     if update.callback_query:
-        update.callback_query.message.reply_text(summary, parse_mode='HTML', reply_markup=reply_markup)
+        update.callback_query.message.reply_text(summary, parse_mode='HTML')
     else:
-        update.message.reply_text(summary, parse_mode='HTML', reply_markup=reply_markup)
+        update.message.reply_text(summary, parse_mode='HTML')
+    
+    return WEIGHING
+
+def handle_weight_input(update: Update, context: CallbackContext):
+    """Обработка ввода веса"""
+    user_id = str(update.effective_user.id)
+    text = update.message.text.strip()
+    
+    try:
+        weight = float(text)
+        if weight <= 0 or weight > 300:
+            raise ValueError("Некорректный вес")
+    except ValueError:
+        update.message.reply_text("❌ Пожалуйста, введите корректный вес в килограммах (например: 75.5)")
+        return WEIGHING
+    
+    # Сохраняем вес
+    weight_record = save_weight(user_id, weight)
+    
+    # Получаем историю для анализа
+    weight_history = get_weight_history(user_id)
+    progress_text = get_weight_progress(weight_history)
+    
+    response = (
+        f"✅ Вес сохранен: {weight}кг\n"
+        f"{progress_text}\n\n"
+        f"{format_weight_history(weight_history)}"
+    )
+    
+    update.message.reply_text(response)
+    
+    # Завершаем диалог
+    keyboard = [["/train", "/progress"], ["/stats", "/help"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    update.message.reply_text("🏁 Тренировка завершена!", reply_markup=reply_markup)
     
     return ConversationHandler.END
 
+def skip_weight(update: Update, context: CallbackContext):
+    """Пропуск взвешивания"""
+    update.message.reply_text("⚖️ Взвешивание пропущено")
+    
+    # Завершаем диалог
+    keyboard = [["/train", "/progress"], ["/stats", "/help"]]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    update.message.reply_text("🏁 Тренировка завершена!", reply_markup=reply_markup)
+    
+    return ConversationHandler.END
+
+def weight_command(update: Update, context: CallbackContext):
+    """Команда /weight - запись веса вне тренировки"""
+    user_id = str(update.effective_user.id)
+    weight_history = get_weight_history(user_id)
+    
+    if weight_history:
+        last_weight = weight_history[-1]['weight']
+        update.message.reply_text(
+            f"⚖️ Ваш последний вес: {last_weight}кг\n\n"
+            f"Введите текущий вес в килограммах:",
+            parse_mode='HTML'
+        )
+    else:
+        update.message.reply_text(
+            "⚖️ Введите ваш вес в килограммах:",
+            parse_mode='HTML'
+        )
+    
+    return WEIGHING
+
 def view_progress(update: Update, context: CallbackContext):
-    """Команда /progress - просмотр истории тренировок"""
+    """Команда /progress - просмотр истории тренировок и веса"""
     user_id = str(update.effective_user.id)
     user_data = load_user_data()
     
@@ -776,7 +1019,14 @@ def view_progress(update: Update, context: CallbackContext):
             response += f"  ... и ещё {len(session['exercises']) - 3} упражнений\n"
         response += "\n"
     
-    response += f"Всего тренировок: {len(history)}"
+    response += f"Всего тренировок: {len(history)}\n\n"
+    
+    # Добавляем историю веса
+    weight_history = get_weight_history(user_id)
+    if weight_history:
+        response += format_weight_history(weight_history)
+        response += f"\n\n{get_weight_progress(weight_history)}"
+    
     update.message.reply_text(response, parse_mode='HTML')
 
 def view_stats(update: Update, context: CallbackContext):
@@ -797,6 +1047,21 @@ def view_stats(update: Update, context: CallbackContext):
     stats_text += f"День А: <b>{day_a_count}</b> тренировок\n"
     stats_text += f"День Б: <b>{day_b_count}</b> тренировок\n\n"
     
+    # Добавляем статистику веса
+    weight_history = get_weight_history(user_id)
+    if weight_history:
+        current_weight = weight_history[-1]['weight']
+        stats_text += f"⚖️ Текущий вес: <b>{current_weight}кг</b>\n"
+        if len(weight_history) > 1:
+            first_weight = weight_history[0]['weight']
+            difference = current_weight - first_weight
+            if difference > 0:
+                stats_text += f"📈 Изменение веса: <b>+{difference:.1f}кг</b>\n"
+            elif difference < 0:
+                stats_text += f"📉 Изменение веса: <b>{difference:.1f}кг</b>\n"
+            else:
+                stats_text += f"⚖️ Вес не изменился\n"
+    
     if len(history) >= 2:
         stats_text += "🔄 <b>Последние тренировки сохранены!</b>\n"
     stats_text += "\nПродолжайте в том же духе! 💪"
@@ -809,28 +1074,29 @@ def help_command(update: Update, context: CallbackContext):
 
 <b>Основные команды:</b>
 /train - Начать новую тренировку
-/progress - Посмотреть историю тренировок  
+/progress - Посмотреть историю тренировок и веса
 /stats - Статистика прогресса
+/weight - Записать текущий вес
 /help - Эта справка
 
 <b>Новые возможности:</b>
+• ⏱ <b>Таймеры отдыха</b> - 1.5, 2, 3, 5 минут для отдыха между подходами
+• ⚖️ <b>Трекер веса</b> - автоматическое предложение взвеситься после тренировки
 • 📊 <b>Графики прогресса</b> - ASCII-визуализация ваших результатов
 • 🎯 <b>Умные рекомендации</b> - AI-советы на основе вашей истории
-• 🔔 <b>Авто-напоминания</b> - когда пора увеличивать вес или сделать перерыв
-• 📈 <b>Детальная статистика</b> - полная аналитика по каждому упражнению
 
 <b>Как работать с ботом:</b>
 1. Нажмите /train
 2. Выберите день тренировки
-3. Просмотрите полный список упражнений с историей
-4. Выбирайте упражнения в любом порядке
-5. Получайте рекомендации и аналитику
-6. Вводите данные в формате: <code>вес повторения</code>
-7. Завершите тренировку когда закончите
+3. Используйте таймеры для отдыха между подходами
+4. Вводите данные упражнений
+5. После тренировки запишите вес
+6. Следите за прогрессом в /progress
 
-<b>О программе тренировок:</b>
-• <b>День А</b>: Горизонтальные жимы + вертикальные тяги
-• <b>День Б</b>: Вертикальные жимы + горизонтальные тяги
+<b>Таймеры отдыха:</b>
+• ⏱ 1.5 мин - для суперсетов и легких упражнений
+• ⏱ 3 мин - для базовых упражнений и тяжелых подходов
+• ⏱ 5 мин - для максимальных весов
 
 💡 <b>Рекомендация:</b> Чередуйте дни по схеме:
 Неделя 1: А-Б-А, Неделя 2: Б-А-Б
@@ -873,17 +1139,27 @@ def main():
         
         # Обработчик диалога тренировки
         conv_handler = ConversationHandler(
-            entry_points=[CommandHandler('train', start_training_command)],
+            entry_points=[
+                CommandHandler('train', start_training_command),
+                CommandHandler('weight', weight_command)
+            ],
             states={
                 CHOOSING_DAY: [MessageHandler(Filters.regex('^(День А|День Б)$'), show_exercise_list)],
                 CHOOSING_EXERCISE: [
-                    CallbackQueryHandler(handle_exercise_selection, pattern='^(ex_|progress|finish|reminders|stats)'),
+                    CallbackQueryHandler(handle_exercise_selection, pattern='^(ex_|progress|finish|reminders|stats|timer_)'),
                     CallbackQueryHandler(show_exercise_statistics, pattern='^(stat_|back_to_exercises)')
                 ],
                 ENTERING_EXERCISE_DATA: [
                     MessageHandler(Filters.text & ~Filters.command, handle_exercise_input),
                     CommandHandler('skip', skip_exercise)
                 ],
+                WEIGHING: [
+                    MessageHandler(Filters.text & ~Filters.command, handle_weight_input),
+                    CommandHandler('skip', skip_weight)
+                ],
+                TIMER_SELECTION: [
+                    CallbackQueryHandler(handle_timer_selection, pattern='^(timer_|back_to_exercises)')
+                ]
             },
             fallbacks=[CommandHandler('cancel', cancel)],
         )
