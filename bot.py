@@ -3,6 +3,8 @@ import json
 import os
 import io
 import asyncio
+import signal
+import sys
 from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -21,6 +23,26 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Глобальная переменная для graceful shutdown
+updater = None
+
+def signal_handler(signum, frame):
+    """Обработчик сигналов для graceful shutdown"""
+    print(f"📞 Получен сигнал {signum}, завершаем работу бота...")
+    
+    global updater
+    if updater is not None:
+        print("🛑 Останавливаем updater...")
+        updater.stop()
+        print("✅ Updater остановлен")
+    
+    print("👋 Бот завершил работу")
+    sys.exit(0)
+
+# Регистрируем обработчики сигналов
+signal.signal(signal.SIGTERM, signal_handler)  # Для Railway
+signal.signal(signal.SIGINT, signal_handler)   # Для локального Ctrl+C
 
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -1124,6 +1146,8 @@ def error_handler(update: Update, context: CallbackContext):
 # ========== ЗАПУСК БОТА ==========
 def main():
     """Основная функция запуска бота"""
+    global updater
+    
     print("🤖 Бот запускается на Railway...")
     print("⏹️ Для остановки используйте панель Railway")
     
@@ -1134,7 +1158,14 @@ def main():
     
     try:
         # Создаем updater с обработкой конфликтов
-        updater = Updater(BOT_TOKEN, use_context=True)
+        updater = Updater(
+            BOT_TOKEN, 
+            use_context=True,
+            request_kwargs={
+                'read_timeout': 10, 
+                'connect_timeout': 10
+            }
+        )
         dispatcher = updater.dispatcher
         
         # Обработчик диалога тренировки
@@ -1162,6 +1193,9 @@ def main():
                 ]
             },
             fallbacks=[CommandHandler('cancel', cancel)],
+            per_chat=True,
+            per_user=True,
+            per_message=False
         )
         
         # Регистрируем обработчики
@@ -1173,13 +1207,21 @@ def main():
         dispatcher.add_handler(conv_handler)
         dispatcher.add_error_handler(error_handler)
         
-        # Запускаем бота
+        # Запускаем бота с правильными параметрами для Railway
         print("✅ Бот успешно запущен и готов к работе!")
-        updater.start_polling()
+        
+        updater.start_polling(
+            drop_pending_updates=True,  # Игнорируем старые сообщения при перезапуске
+            timeout=20,
+            allowed_updates=['message', 'callback_query']
+        )
+        
+        # Ждем завершения
         updater.idle()
         
     except Exception as e:
         print(f"❌ Ошибка при запуске бота: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
