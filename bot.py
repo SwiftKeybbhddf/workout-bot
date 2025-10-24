@@ -26,10 +26,9 @@ BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
 if not BOT_TOKEN:
     print("❌ ОШИБКА: BOT_TOKEN не найден!")
-    print("💡 Решение: Добавьте переменную BOT_TOKEN в настройках Railway")
     exit(1)
 
-print("✅ BOT_TOKEN успешно загружен!")
+print("✅ BOT_TOKEN найден, запускаем бота...")
 
 TRAINING_PROGRAMS = {
     "День А": {
@@ -436,32 +435,18 @@ def error_handler(update: Update, context: CallbackContext):
     if update and update.effective_message:
         update.effective_message.reply_text("❌ Произошла ошибка. Попробуйте еще раз или начните заново: /start")
 
-def cleanup_webhook():
-    """Очистка вебхука перед запуском polling"""
-    import requests
-    try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook")
-        print("✅ Вебхук очищен")
-    except Exception as e:
-        print(f"⚠️ Не удалось очистить вебхук: {e}")
-
 def main():
     """Основная функция запуска бота"""
-    print("=" * 50)
-    print("🤖 Запуск Workout Bot")
-    print("🔄 Очистка предыдущих сессий...")
-    
-    # Очищаем вебхук перед запуском
-    cleanup_webhook()
-    time.sleep(2)  # Даем время на очистку
+    print("🤖 Бот запускается на Railway...")
+    print("⏹️ Для остановки используйте панель Railway")
     
     # Проверяем токен
     if not BOT_TOKEN:
         print("❌ Не могу запустить бота без BOT_TOKEN")
         return
     
-    # Создаем updater с обработкой конфликтов
     try:
+        # Создаем updater с обработкой конфликтов
         updater = Updater(BOT_TOKEN, use_context=True)
         dispatcher = updater.dispatcher
         
@@ -489,15 +474,12 @@ def main():
         dispatcher.add_error_handler(error_handler)
         
         # Запускаем бота
-        print("🚀 Бот запущен и готов к работе!")
-        print("⏹️ Для остановки используйте Ctrl+C")
-        
-        updater.start_polling(drop_pending_updates=True)  # Очищаем pending updates
+        print("✅ Бот успешно запущен и готов к работе!")
+        updater.start_polling()
         updater.idle()
         
     except Exception as e:
-        print(f"❌ Ошибка запуска бота: {e}")
-        print("💡 Попробуйте перезапустить деплой через несколько минут")
+        print(f"❌ Ошибка при запуске бота: {e}")
 
 if __name__ == '__main__':
     main()
