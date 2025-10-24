@@ -1,8 +1,7 @@
 import os
-from decouple import config
 
 # Получаем токен из переменных окружения
-BOT_TOKEN = config('BOT_TOKEN')
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
 # Проверяем, что токен установлен
 if not BOT_TOKEN:
