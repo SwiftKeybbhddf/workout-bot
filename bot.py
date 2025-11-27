@@ -4,7 +4,7 @@ import os
 import signal
 import sys
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -23,32 +23,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Глобальная переменная для graceful shutdown
-application = None
-
-def signal_handler(signum, frame):
-    """Обработчик сигналов для graceful shutdown"""
-    print(f"📞 Получен сигнал {signum}, завершаем работу бота...")
-    
-    global application
-    if application is not None:
-        print("🛑 Останавливаем application...")
-        application.stop()
-        print("✅ Application остановлен")
-    
-    print("👋 Бот завершил работу")
-    sys.exit(0)
-
-# Регистрируем обработчики сигналов
-signal.signal(signal.SIGTERM, signal_handler)
-signal.signal(signal.SIGINT, signal_handler)
-
 # ========== КОНФИГУРАЦИЯ ==========
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 
 if not BOT_TOKEN:
     print("❌ ОШИБКА: BOT_TOKEN не найден!")
-    exit(1)
+    sys.exit(1)
 
 print("✅ BOT_TOKEN найден, запускаем бота...")
 
@@ -168,51 +148,11 @@ async def timer_callback(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"❌ Ошибка отправки уведомления таймера: {e}")
 
-async def start_timer_progress(context: ContextTypes.DEFAULT_TYPE):
-    """Функция для обновления прогресса таймера"""
-    job = context.job
-    chat_id = job.context['chat_id']
-    timer_name = job.context['timer_name']
-    remaining = job.context['remaining']
-    message_id = job.context.get('message_id')
-    
-    if remaining <= 0:
-        return
-    
-    try:
-        if message_id:
-            await context.bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=message_id,
-                text=f"⏰ Таймер {timer_name}\nОсталось: {remaining} сек."
-            )
-        else:
-            message = await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"⏰ Таймер {timer_name}\nОсталось: {remaining} сек."
-            )
-            job.context['message_id'] = message.message_id
-        
-        job.context['remaining'] = remaining - 1
-        
-    except Exception as e:
-        print(f"❌ Ошибка обновления таймера: {e}")
-
 def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE, duration: int, timer_name: str):
     """Устанавливает таймер через job queue"""
     chat_id = update.effective_message.chat_id
     
     timer_job_context = {'chat_id': chat_id, 'timer_name': timer_name}
-    progress_job_context = {'chat_id': chat_id, 'timer_name': timer_name, 'remaining': duration}
-    
-    # Запускаем прогресс таймера
-    progress_job = context.job_queue.run_repeating(
-        start_timer_progress,
-        interval=1,
-        first=0,
-        context=progress_job_context,
-        name=f"timer_progress_{chat_id}"
-    )
     
     # Запускаем основной таймер
     context.job_queue.run_once(
@@ -222,15 +162,7 @@ def set_timer(update: Update, context: ContextTypes.DEFAULT_TYPE, duration: int,
         name=f"timer_end_{chat_id}"
     )
     
-    # Останавливаем прогресс таймера после завершения
-    context.job_queue.run_once(
-        lambda ctx: progress_job.schedule_removal(),
-        duration,
-        context={},
-        name=f"timer_cleanup_{chat_id}"
-    )
-    
-    print(f"✅ Таймер {timer_name} установлен на {duration} секунд для чатf {chat_id}")
+    print(f"✅ Таймер {timer_name} установлен на {duration} секунд для чата {chat_id}")
     return f"⏰ Таймер {timer_name} установлен на {duration} секунд"
 
 # ========== ФУНКЦИИ АНАЛИТИКИ И РЕКОМЕНДАЦИЙ ==========
@@ -260,11 +192,9 @@ def get_exercise_history(user_id, exercise_name, limit=3):
     return exercise_history
 
 def get_full_exercise_history(user_id, exercise_name):
-    """Получает полную историю упражнения для аналитики"""
     return get_exercise_history(user_id, exercise_name, limit=None)
 
 def format_exercise_history(history):
-    """Форматирует историю упражнения для отображения"""
     if not history:
         return "📝 Ранее не выполнялось"
     
@@ -274,193 +204,23 @@ def format_exercise_history(history):
     
     return "\n".join(lines)
 
-def create_simple_ascii_chart(history):
-    """Создает простой ASCII-график прогресса"""
-    if not history or len(history) < 2:
-        return "Недостаточно данных для графика"
-    
-    recent_history = history[:8]
-    weights = [h['weight'] for h in recent_history]
-    
-    min_weight = min(weights)
-    max_weight = max(weights)
-    
-    if min_weight == max_weight:
-        return "📊 Вес стабилен: {}кг".format(weights[0])
-    
-    chart_lines = []
-    for weight in reversed(weights):
-        normalized = int((weight - min_weight) / (max_weight - min_weight) * 15)
-        bar = "█" * (normalized + 1)
-        chart_lines.append(f"{weight:4}кг |{bar}")
-    
-    return "📊 График прогресса:\n" + "\n".join(chart_lines)
-
 def generate_smart_recommendations(user_id, exercise_name):
-    """Генерирует умные рекомендации на основе истории тренировок"""
     history = get_full_exercise_history(user_id, exercise_name)
     if not history or len(history) < 3:
         return "💡 Продолжайте собирать данные для персонализированных рекомендаций"
     
-    current = history[0]
-    previous = history[1] if len(history) > 1 else None
-    two_back = history[2] if len(history) > 2 else None
-    
-    recommendations = []
-    
-    if previous and two_back:
-        weight_trend = current['weight'] - two_back['weight']
-        reps_trend = current['reps'] - two_back['reps']
-        
-        if weight_trend == 0 and current['reps'] >= 10:
-            recommendations.append("🎯 Пора увеличить вес на 2.5-5 кг")
-        elif weight_trend > 0:
-            recommendations.append(f"🚀 Отличный прогресс! +{weight_trend}кг за 2 тренировки")
-        elif weight_trend < 0:
-            recommendations.append("💪 Вернитесь к предыдущему весу и поработайте над техникой")
-        
-        if reps_trend >= 3:
-            recommendations.append("🔥 Отличная выносливость! Можно добавить вес")
-        elif reps_trend <= -3:
-            recommendations.append("📉 Упали повторения? Проверьте восстановление и питание")
-    
-    recent_weights = [h['weight'] for h in history[:3]]
-    if len(set(recent_weights)) == 1:
-        avg_reps = sum([h['reps'] for h in history[:3]]) / 3
-        if avg_reps >= 12:
-            recommendations.append("⚡ Вы стабильно делаете 12+ повторений - пора увеличивать вес!")
-        elif avg_reps <= 8:
-            recommendations.append("📊 Мало повторений? Попробуйте снизить вес на 5-10%")
-    
-    if len(history) >= 4:
-        dates = [datetime.strptime(h['date'], '%d.%m.%Y') for h in history[:4]]
-        date_diffs = [(dates[i] - dates[i+1]).days for i in range(len(dates)-1)]
-        avg_frequency = sum(date_diffs) / len(date_diffs)
-        
-        if avg_frequency > 7:
-            recommendations.append("📅 Тренируйтесь чаще (2-3 раза в неделю) для лучшего прогресса")
-        elif avg_frequency < 2:
-            recommendations.append("🛌 Давайте мышцам больше времени на восстановление (2-3 дня между тренировками)")
-    
-    if not recommendations:
-        recommendations.append("💪 Продолжайте в том же духе! Ваш прогресс стабилен")
-    
-    return "\n".join(recommendations)
+    return "💪 Продолжайте в том же духе! Ваш прогресс стабилен"
 
 def check_workout_reminders(user_id):
-    """Проверяет необходимость напоминаний"""
     user_data = load_user_data()
     
     if user_id not in user_data or not user_data[user_id].get('history'):
         return "💡 Начните первую тренировку! Используйте /train"
     
-    history = user_data[user_id]['history']
-    if not history:
-        return "💡 Начните первую тренировку! Используйте /train"
-    
-    last_workout = history[-1]
-    last_date = datetime.fromisoformat(last_workout['start_time'])
-    days_since_last = (datetime.now() - last_date).days
-    
-    reminders = []
-    
-    if days_since_last >= 3:
-        reminders.append(f"🕐 Прошло {days_since_last} дней с последней тренировки")
-    
-    if days_since_last >= 7:
-        reminders.append("⚠️ Длительный перерыв может замедлить прогресс")
-    
-    progress_data = {}
-    for session in history[-3:]:
-        for exercise in session.get('exercises', []):
-            name = exercise['name']
-            if name not in progress_data:
-                progress_data[name] = []
-            progress_data[name].append(exercise)
-    
-    for exercise_name, exercises in progress_data.items():
-        if len(exercises) >= 2:
-            last = exercises[0]
-            prev = exercises[1]
-            if last['weight'] == prev['weight'] and last['reps'] >= 10:
-                reminders.append(f"🎯 {exercise_name}: готовы к увеличению веса!")
-    
-    if reminders:
-        return "💡 Напоминания:\n" + "\n".join(reminders)
-    
     return None
-
-def get_detailed_exercise_stats(user_id, exercise_name):
-    """Возвращает детальную статистику по упражнению"""
-    history = get_full_exercise_history(user_id, exercise_name)
-    if not history:
-        return None
-    
-    weights = [h['weight'] for h in history]
-    reps = [h['reps'] for h in history]
-    
-    stats = {
-        'total_workouts': len(history),
-        'current_weight': weights[0],
-        'current_reps': reps[0],
-        'best_weight': max(weights),
-        'best_reps': max(reps),
-        'avg_weight': sum(weights) / len(weights),
-        'avg_reps': sum(reps) / len(reps),
-        'weight_progress': weights[0] - weights[-1],
-        'reps_progress': reps[0] - reps[-1],
-        'consistency': len(set(weights)) / len(weights)
-    }
-    
-    return stats
-
-def format_detailed_stats(stats, exercise_name):
-    """Форматирует детальную статистику для отображения"""
-    if not stats:
-        return f"📊 Нет данных по упражнению: {exercise_name}"
-    
-    return f"""
-📈 <b>Детальная статистика: {exercise_name}</b>
-
-📅 Всего тренировок: <b>{stats['total_workouts']}</b>
-⚖️ Текущий вес: <b>{stats['current_weight']}кг × {stats['current_reps']}повт.</b>
-
-🏆 Рекорды:
-• Макс. вес: <b>{stats['best_weight']}кг</b>
-• Макс. повторения: <b>{stats['best_reps']}повт.</b>
-
-📊 Средние показатели:
-• Вес: <b>{stats['avg_weight']:.1f}кг</b>
-• Повторения: <b>{stats['avg_reps']:.1f}повт.</b>
-
-📈 Прогресс с начала:
-• Вес: <b>{stats['weight_progress']:+.1f}кг</b>
-• Повторения: <b>{stats['reps_progress']:+.1f}повт.</b>
-
-🎯 Стабильность: <b>{stats['consistency']*100:.0f}%</b>
-"""
-
-def get_progress_comparison(current_weight, current_reps, previous_history):
-    """Сравнивает текущий результат с предыдущими"""
-    if not previous_history:
-        return "🎉 Первая запись этого упражнения!"
-    
-    last_record = previous_history[0]
-    last_weight = last_record['weight']
-    last_reps = last_record['reps']
-    
-    if current_weight > last_weight:
-        return f"🚀 Прогресс! +{current_weight - last_weight}кг к весу"
-    elif current_reps > last_reps:
-        return f"💪 Прогресс! +{current_reps - last_reps} повторений"
-    elif current_weight == last_weight and current_reps == last_reps:
-        return "⚖️ Такой же результат как в прошлый раз"
-    else:
-        return "📉 Немного ниже прошлого результата. В следующий раз получится лучше!"
 
 # ========== ФУНКЦИИ ИНТЕРФЕЙСА ==========
 def get_exercise_keyboard(day, completed_exercises, user_id=None):
-    """Создает расширенную клавиатуру для выбора упражнений"""
     exercises = TRAINING_PROGRAMS[day]['exercises']
     keyboard = []
     
@@ -484,26 +244,16 @@ def get_exercise_keyboard(day, completed_exercises, user_id=None):
         InlineKeyboardButton("🎯 Рекомендации", callback_data="reminders")
     ])
     keyboard.append([
-        InlineKeyboardButton("📈 Статистика", callback_data="stats"),
         InlineKeyboardButton("🏁 Завершить", callback_data="finish")
     ])
     
     return InlineKeyboardMarkup(keyboard)
 
 def get_exercise_detail_keyboard():
-    """Создает клавиатуру для окна упражнения с таймерами"""
     keyboard = [
         [
             InlineKeyboardButton("⏱ 1.5 мин", callback_data="timer_90"),
             InlineKeyboardButton("⏱ 3 мин", callback_data="timer_180")
-        ],
-        [
-            InlineKeyboardButton("⏱ 2 мин", callback_data="timer_120"),
-            InlineKeyboardButton("⏱ 5 мин", callback_data="timer_300")
-        ],
-        [
-            InlineKeyboardButton("📊 Прогресс тренировки", callback_data="progress"),
-            InlineKeyboardButton("🎯 Рекомендации", callback_data="reminders")
         ],
         [
             InlineKeyboardButton("🔙 К списку упражнений", callback_data="back_to_exercises"),
@@ -514,18 +264,11 @@ def get_exercise_detail_keyboard():
 
 # ========== ОСНОВНЫЕ ФУНКЦИИ БОТА ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start - начало работы"""
     user = update.effective_user
     welcome_text = f"""
 🤖 Привет, {user.first_name}!
 
 🏋️‍♂️ Добро пожаловать в трекер тренировок!
-
-<b>Новые возможности:</b>
-• ⏱ <b>Таймеры отдыха</b> - 1.5, 3 минуты и другие
-• ⚖️ <b>Трекер веса</b> - отслеживание прогресса массы тела
-• 📊 <b>Графики прогресса</b> - визуализация ваших результатов
-• 🎯 <b>Умные рекомендации</b> - персонализированные советы
 
 <b>Основные команды:</b>
 /train - Начать новую тренировку
@@ -537,11 +280,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome_text, parse_mode='HTML')
 
 async def start_training_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /train - начало тренировки"""
     return await choose_training_day(update, context)
 
 async def choose_training_day(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Выбор дня тренировки"""
     keyboard = [["День А", "День Б"], ["/cancel"]]
     reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
@@ -554,7 +295,6 @@ async def choose_training_day(update: Update, context: ContextTypes.DEFAULT_TYPE
     return CHOOSING_DAY
 
 async def show_exercise_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список упражнений для выбранного дня"""
     if update.message:
         day = update.message.text
     else:
@@ -594,7 +334,6 @@ async def show_exercise_list(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return CHOOSING_EXERCISE
 
 async def handle_exercise_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора упражнения с таймерами в том же окне"""
     query = update.callback_query
     await query.answer()
     
@@ -607,8 +346,6 @@ async def handle_exercise_selection(update: Update, context: ContextTypes.DEFAUL
         return await finish_training_session(update, context)
     elif data == "reminders":
         return await show_reminders(update, context)
-    elif data == "stats":
-        return await show_detailed_statistics_menu(update, context)
     elif data.startswith("timer_"):
         return await handle_timer_selection(update, context)
     elif data == "back_to_exercises":
@@ -626,13 +363,9 @@ async def handle_exercise_selection(update: Update, context: ContextTypes.DEFAUL
         
         recommendations = generate_smart_recommendations(user_id, exercise_name)
         
-        full_history = get_full_exercise_history(user_id, exercise_name)
-        ascii_chart = create_simple_ascii_chart(full_history)
-        
         message_text = (
             f"💪 <b>Упражнение:</b> {exercise_name}\n\n"
             f"📊 <b>История выполнения:</b>\n{history_text}\n\n"
-            f"{ascii_chart}\n\n"
             f"🎯 <b>Рекомендации:</b>\n{recommendations}\n\n"
         )
         
@@ -654,7 +387,6 @@ async def handle_exercise_selection(update: Update, context: ContextTypes.DEFAUL
         return ENTERING_EXERCISE_DATA
 
 async def handle_timer_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка выбора таймера с возвратом в то же окно упражнения"""
     query = update.callback_query
     await query.answer()
     
@@ -665,12 +397,8 @@ async def handle_timer_selection(update: Update, context: ContextTypes.DEFAULT_T
         
         if duration == 90:
             timer_name = "1.5 минуты"
-        elif duration == 120:
-            timer_name = "2 минуты"
         elif duration == 180:
             timer_name = "3 минуты"
-        elif duration == 300:
-            timer_name = "5 минут"
         else:
             timer_name = f"{duration} секунд"
         
@@ -681,28 +409,9 @@ async def handle_timer_selection(update: Update, context: ContextTypes.DEFAULT_T
             text=result
         )
         
-        current_message = query.message.text
-        if "⏰ Таймер" not in current_message:
-            updated_message = current_message + f"\n\n⏰ <b>Таймер {timer_name} запущен!</b>"
-        else:
-            lines = current_message.split('\n')
-            while lines and "⏰ Таймер" in lines[-1]:
-                lines.pop()
-            updated_message = '\n'.join(lines) + f"\n\n⏰ <b>Таймер {timer_name} запущен!</b>"
-        
-        try:
-            await query.edit_message_text(
-                updated_message,
-                parse_mode='HTML',
-                reply_markup=query.message.reply_markup
-            )
-        except Exception as e:
-            print(f"⚠️ Не удалось обновить сообщение: {e}")
-        
         return ENTERING_EXERCISE_DATA
 
 async def handle_exercise_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода данных упражнения с возвратом к тому же интерфейсу"""
     user_id = str(update.effective_user.id)
     text = update.message.text.strip()
     user_data = load_user_data()
@@ -754,77 +463,11 @@ async def handle_exercise_input(update: Update, context: ContextTypes.DEFAULT_TY
     
     save_user_data(user_data)
     
-    exercise_history = get_exercise_history(user_id, exercise_name)
-    previous_history = []
-    if exercise_history is not None:
-        previous_history = [h for h in exercise_history if h['weight'] != weight or h['reps'] != reps]
-    progress_text = get_progress_comparison(weight, reps, previous_history)
-    
-    day = context.user_data.get('current_day')
-    exercises = TRAINING_PROGRAMS[day]['exercises']
-    exercise_name = exercises[exercise_index]
-    
-    exercise_history = get_exercise_history(user_id, exercise_name)
-    history_text = format_exercise_history(exercise_history)
-    
-    recommendations = generate_smart_recommendations(user_id, exercise_name)
-    
-    full_history = get_full_exercise_history(user_id, exercise_name)
-    ascii_chart = create_simple_ascii_chart(full_history)
-    
-    message_text = (
-        f"💪 <b>Упражнение:</b> {exercise_name}\n\n"
-        f"✅ <b>Сохранено:</b> {weight}кг × {reps}повт.\n"
-        f"{progress_text}\n\n"
-        f"📊 <b>История выполнения:</b>\n{history_text}\n\n"
-        f"{ascii_chart}\n\n"
-        f"🎯 <b>Рекомендации:</b>\n{recommendations}\n\n"
-    )
-    
-    message_text += (
-        f"<b>Введите вес и количество повторений:</b>\n"
-        f"<code>вес повторения</code>\n"
-        f"Пример: <code>60 10</code>\n\n"
-        f"<b>Или выберите таймер отдыха:</b>"
-    )
-    
-    reply_markup = get_exercise_detail_keyboard()
-    
-    await update.message.reply_text(
-        message_text,
-        parse_mode='HTML',
-        reply_markup=reply_markup
-    )
-    
-    return ENTERING_EXERCISE_DATA
-
-async def skip_exercise(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Пропуск упражнения с возвратом к списку"""
-    user_id = str(update.effective_user.id)
-    user_data = load_user_data()
-    
-    if user_id not in user_data or 'current_session' not in user_data[user_id]:
-        await update.message.reply_text("❌ Сессия тренировки не найдена. Начните заново: /train")
-        return ConversationHandler.END
-    
-    current_session = user_data[user_id]['current_session']
-    day = current_session['day']
-    exercise_index = context.user_data.get('current_exercise')
-    exercises_list = TRAINING_PROGRAMS[day]['exercises']
-    exercise_name = exercises_list[exercise_index]
-    
-    if update.message:
-        await update.message.reply_text(f"⏭️ Упражнение пропущено: {exercise_name}")
-    else:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"⏭️ Упражнение пропущено: {exercise_name}"
-        )
+    await update.message.reply_text(f"✅ Сохранено: {weight}кг × {reps}повт.")
     
     return await show_exercise_list_after_input(update, context)
 
 async def show_exercise_list_after_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список упражнений после ввода данных"""
     user_id = str(update.effective_user.id)
     user_data = load_user_data()
     day = context.user_data.get('current_day')
@@ -840,18 +483,10 @@ async def show_exercise_list_after_input(update: Update, context: ContextTypes.D
         await update.message.reply_text("🎯 <b>Выберите упражнение:</b>", parse_mode='HTML', reply_markup=reply_markup)
     elif update.callback_query:
         await update.callback_query.edit_message_text("🎯 <b>Выберите упражнение:</b>", parse_mode='HTML', reply_markup=reply_markup)
-    else:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="🎯 <b>Выберите упражнение:</b>",
-            parse_mode='HTML',
-            reply_markup=reply_markup
-        )
     
     return CHOOSING_EXERCISE
 
 async def show_current_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает текущий прогресс тренировки"""
     user_id = str(update.effective_user.id)
     user_data = load_user_data()
     
@@ -876,37 +511,10 @@ async def show_current_progress(update: Update, context: ContextTypes.DEFAULT_TY
     
     if update.callback_query:
         await update.callback_query.message.reply_text(progress_text, parse_mode='HTML')
-        exercise_index = context.user_data.get('current_exercise')
-        if exercise_index is not None:
-            day = context.user_data.get('current_day')
-            exercises = TRAINING_PROGRAMS[day]['exercises']
-            exercise_name = exercises[exercise_index]
-            
-            user_id = str(update.effective_user.id)
-            exercise_history = get_exercise_history(user_id, exercise_name)
-            history_text = format_exercise_history(exercise_history)
-            recommendations = generate_smart_recommendations(user_id, exercise_name)
-            full_history = get_full_exercise_history(user_id, exercise_name)
-            ascii_chart = create_simple_ascii_chart(full_history)
-            
-            message_text = (
-                f"💪 <b>Упражнение:</b> {exercise_name}\n\n"
-                f"📊 <b>История выполнения:</b>\n{history_text}\n\n"
-                f"{ascii_chart}\n\n"
-                f"🎯 <b>Рекомендации:</b>\n{recommendations}\n\n"
-                f"<b>Введите вес и количество повторений:</b>\n"
-                f"<code>вес повторения</code>\n"
-                f"Пример: <code>60 10</code>\n\n"
-                f"<b>Или выберите таймер отдыха:</b>"
-            )
-            
-            reply_markup = get_exercise_detail_keyboard()
-            await update.callback_query.message.reply_text(message_text, parse_mode='HTML', reply_markup=reply_markup)
     
     return ENTERING_EXERCISE_DATA
 
 async def show_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает умные напоминания"""
     user_id = str(update.effective_user.id)
     reminders = check_workout_reminders(user_id)
     
@@ -924,131 +532,9 @@ async def show_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='HTML'
             )
     
-    exercise_index = context.user_data.get('current_exercise')
-    if exercise_index is not None:
-        day = context.user_data.get('current_day')
-        exercises = TRAINING_PROGRAMS[day]['exercises']
-        exercise_name = exercises[exercise_index]
-        
-        user_id = str(update.effective_user.id)
-        exercise_history = get_exercise_history(user_id, exercise_name)
-        history_text = format_exercise_history(exercise_history)
-        recommendations = generate_smart_recommendations(user_id, exercise_name)
-        full_history = get_full_exercise_history(user_id, exercise_name)
-        ascii_chart = create_simple_ascii_chart(full_history)
-        
-        message_text = (
-            f"💪 <b>Упражнение:</b> {exercise_name}\n\n"
-            f"📊 <b>История выполнения:</b>\n{history_text}\n\n"
-            f"{ascii_chart}\n\n"
-            f"🎯 <b>Рекомендации:</b>\n{recommendations}\n\n"
-            f"<b>Введите вес и количество повторений:</b>\n"
-            f"<code>вес повторения</code>\n"
-            f"Пример: <code>60 10</code>\n\n"
-            f"<b>Или выберите таймер отдыха:</b>"
-        )
-        
-        reply_markup = get_exercise_detail_keyboard()
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=message_text,
-            parse_mode='HTML',
-            reply_markup=reply_markup
-        )
-    
     return ENTERING_EXERCISE_DATA
-    
-async def show_detailed_statistics_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает меню детальной статистики"""
-    user_id = str(update.effective_user.id)
-    day = context.user_data.get('current_day')
-    
-    exercises = TRAINING_PROGRAMS[day]['exercises']
-    keyboard = []
-    
-    for i, exercise in enumerate(exercises):
-        keyboard.append([InlineKeyboardButton(
-            f"{i+1}. {exercise}", 
-            callback_data=f"stat_{i}"
-        )])
-    
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_exercises")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.callback_query.message.reply_text(
-        "📈 <b>Выберите упражнение для просмотра детальной статистики:</b>",
-        parse_mode='HTML',
-        reply_markup=reply_markup
-    )
-
-async def show_exercise_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает детальную статистику по выбранному упражнению"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = str(update.effective_user.id)
-    data = query.data
-    
-    if data == "back_to_exercises":
-        exercise_index = context.user_data.get('current_exercise')
-        if exercise_index is not None:
-            day = context.user_data.get('current_day')
-            exercises = TRAINING_PROGRAMS[day]['exercises']
-            exercise_name = exercises[exercise_index]
-            
-            exercise_history = get_exercise_history(user_id, exercise_name)
-            history_text = format_exercise_history(exercise_history)
-            recommendations = generate_smart_recommendations(user_id, exercise_name)
-            full_history = get_full_exercise_history(user_id, exercise_name)
-            ascii_chart = create_simple_ascii_chart(full_history)
-            
-            message_text = (
-                f"💪 <b>Упражнение:</b> {exercise_name}\n\n"
-                f"📊 <b>История выполнения:</b>\n{history_text}\n\n"
-                f"{ascii_chart}\n\n"
-                f"🎯 <b>Рекомендации:</b>\n{recommendations}\n\n"
-                f"<b>Введите вес и количество повторений:</b>\n"
-                f"<code>вес повторения</code>\n"
-                f"Пример: <code>60 10</code>\n\n"
-                f"<b>Или выберите таймер отдыха:</b>"
-            )
-            
-            reply_markup = get_exercise_detail_keyboard()
-            await query.edit_message_text(
-                message_text,
-                parse_mode='HTML',
-                reply_markup=reply_markup
-            )
-        return ENTERING_EXERCISE_DATA
-    
-    if data.startswith("stat_"):
-        exercise_index = int(data.split("_")[1])
-        day = context.user_data.get('current_day')
-        exercises = TRAINING_PROGRAMS[day]['exercises']
-        exercise_name = exercises[exercise_index]
-        
-        stats = get_detailed_exercise_stats(user_id, exercise_name)
-        stats_text = format_detailed_stats(stats, exercise_name)
-        
-        full_history = get_full_exercise_history(user_id, exercise_name)
-        ascii_chart = create_simple_ascii_chart(full_history)
-        
-        recommendations = generate_smart_recommendations(user_id, exercise_name)
-        
-        full_message = f"{stats_text}\n\n{ascii_chart}\n\n🎯 <b>Рекомендации:</b>\n{recommendations}"
-        
-        keyboard = [[InlineKeyboardButton("🔙 Назад к статистике", callback_data="stats")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            full_message,
-            parse_mode='HTML',
-            reply_markup=reply_markup
-        )
 
 async def finish_training_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Завершение тренировки с предложением взвеситься"""
     user_id = str(update.effective_user.id)
     user_data = load_user_data()
     
@@ -1081,98 +567,15 @@ async def finish_training_session(update: Update, context: ContextTypes.DEFAULT_
     for i, exercise in enumerate(current_session['exercises'], 1):
         summary += f"{i}. {exercise['name']}: {exercise['weight']}кг × {exercise['reps']}повт.\n"
     
-    total_exercises = len(TRAINING_PROGRAMS[day]['exercises'])
-    completed_count = len(current_session['exercises'])
-    summary += f"\n💪 Выполнено: {completed_count}/{total_exercises} упражнений\n\n"
-    
-    weight_history = get_weight_history(user_id)
-    if weight_history:
-        last_weight = weight_history[-1]['weight']
-        summary += f"⚖️ Ваш последний вес: {last_weight}кг\n"
-    
-    summary += "\nХотите записать текущий вес?\nВведите вес в килограммах или /skip чтобы пропустить"
-    
-    if update.callback_query:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=summary,
-            parse_mode='HTML'
-        )
-    elif update.message:
-        await update.message.reply_text(summary, parse_mode='HTML')
-    else:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=summary,
-            parse_mode='HTML'
-        )
-    
-    return WEIGHING
-
-async def handle_weight_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода веса"""
-    user_id = str(update.effective_user.id)
-    text = update.message.text.strip()
-    
-    try:
-        weight = float(text)
-        if weight <= 0 or weight > 300:
-            raise ValueError("Некорректный вес")
-    except ValueError:
-        await update.message.reply_text("❌ Пожалуйста, введите корректный вес в килограммах (например: 75.5)")
-        return WEIGHING
-    
-    weight_record = save_weight(user_id, weight)
-    
-    weight_history = get_weight_history(user_id)
-    progress_text = get_weight_progress(weight_history)
-    
-    response = (
-        f"✅ Вес сохранен: {weight}кг\n"
-        f"{progress_text}\n\n"
-        f"{format_weight_history(weight_history)}"
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=summary,
+        parse_mode='HTML'
     )
     
-    await update.message.reply_text(response)
-    
-    keyboard = [["/train", "/progress"], ["/stats", "/help"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("🏁 Тренировка завершена!", reply_markup=reply_markup)
-    
     return ConversationHandler.END
-
-async def skip_weight(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Пропуск взвешивания"""
-    await update.message.reply_text("⚖️ Взвешивание пропущено")
-    
-    keyboard = [["/train", "/progress"], ["/stats", "/help"]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("🏁 Тренировка завершена!", reply_markup=reply_markup)
-    
-    return ConversationHandler.END
-
-async def weight_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /weight - запись веса вне тренировки"""
-    user_id = str(update.effective_user.id)
-    weight_history = get_weight_history(user_id)
-    
-    if weight_history:
-        last_weight = weight_history[-1]['weight']
-        await update.message.reply_text(
-            f"⚖️ Ваш последний вес: {last_weight}кг\n\n"
-            f"Введите текущий вес в килограммах:",
-            parse_mode='HTML'
-        )
-    else:
-        await update.message.reply_text(
-            "⚖️ Введите ваш вес в килограммах:",
-            parse_mode='HTML'
-        )
-    
-    return WEIGHING
 
 async def view_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /progress - просмотр истории тренировок и веса"""
     user_id = str(update.effective_user.id)
     user_data = load_user_data()
     
@@ -1192,17 +595,10 @@ async def view_progress(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response += f"  ... и ещё {len(session['exercises']) - 3} упражнений\n"
         response += "\n"
     
-    response += f"Всего тренировок: {len(history)}\n\n"
-    
-    weight_history = get_weight_history(user_id)
-    if weight_history:
-        response += format_weight_history(weight_history)
-        response += f"\n\n{get_weight_progress(weight_history)}"
-    
+    response += f"Всего тренировок: {len(history)}"
     await update.message.reply_text(response, parse_mode='HTML')
 
 async def view_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /stats - статистика прогресса"""
     user_id = str(update.effective_user.id)
     user_data = load_user_data()
     
@@ -1217,65 +613,32 @@ async def view_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     day_a_count = sum(1 for session in history if session['day'] == 'День А')
     day_b_count = sum(1 for session in history if session['day'] == 'День Б')
     stats_text += f"День А: <b>{day_a_count}</b> тренировок\n"
-    stats_text += f"День Б: <b>{day_b_count}</b> тренировок\n\n"
-    
-    weight_history = get_weight_history(user_id)
-    if weight_history:
-        current_weight = weight_history[-1]['weight']
-        stats_text += f"⚖️ Текущий вес: <b>{current_weight}кг</b>\n"
-        if len(weight_history) > 1:
-            first_weight = weight_history[0]['weight']
-            difference = current_weight - first_weight
-            if difference > 0:
-                stats_text += f"📈 Изменение веса: <b>+{difference:.1f}кг</b>\n"
-            elif difference < 0:
-                stats_text += f"📉 Изменение веса: <b>{difference:.1f}кг</b>\n"
-            else:
-                stats_text += f"⚖️ Вес не изменился\n"
-    
-    if len(history) >= 2:
-        stats_text += "🔄 <b>Последние тренировки сохранены!</b>\n"
+    stats_text += f"День Б: <b>{day_b_count}</b> тренировок\n"
     stats_text += "\nПродолжайте в том же духе! 💪"
+    
     await update.message.reply_text(stats_text, parse_mode='HTML')
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /help - справка"""
     help_text = """
 🤖 <b>Помощь по использованию бота</b>
 
 <b>Основные команды:</b>
 /train - Начать новую тренировку
-/progress - Посмотреть историю тренировок и веса
+/progress - Посмотреть историю тренировок
 /stats - Статистика прогресса
 /weight - Записать текущий вес
 /help - Эта справка
 
-<b>Новые возможности:</b>
-• ⏱ <b>Таймеры отдыха</b> - 1.5, 2, 3, 5 минут для отдыха между подходами
-• ⚖️ <b>Трекер веса</b> - автоматическое предложение взвеситься после тренировки
-• 📊 <b>Графики прогресса</b> - ASCII-визуализация ваших результатов
-• 🎯 <b>Умные рекомендации</b> - AI-советы на основе вашей истории
-
 <b>Как работать с ботом:</b>
 1. Нажмите /train
 2. Выберите день тренировки
-3. Выберите упражнение - откроется окно с таймерами
-4. Вводите данные упражнений или запускайте таймеры отдыха
-5. После тренировки запишите вес
-6. Следите за прогрессом в /progress
-
-<b>Таймеры отдыха:</b>
-• ⏱ 1.5 мин - для суперсетов и легких упражнений
-• ⏱ 3 мин - для базовых упражнений и тяжелых подходов
-• ⏱ 5 мин - для максимальных весов
-
-💡 <b>Рекомендация:</b> Чередуйте дни по схеме:
-Неделя 1: А-Б-А, Неделя 2: Б-А-Б
+3. Выберите упражнение
+4. Вводите данные упражнений
+5. После тренировки завершите сессию
     """
     await update.message.reply_text(help_text, parse_mode='HTML')
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена текущей операции"""
     user_id = str(update.effective_user.id)
     user_data = load_user_data()
     
@@ -1287,16 +650,12 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ошибок"""
     logger.error(f"Ошибка: {context.error}", exc_info=context.error)
     if update and update.effective_message:
         await update.effective_message.reply_text("❌ Произошла ошибка. Попробуйте еще раз или начните заново: /start")
 
 # ========== ЗАПУСК БОТА ==========
 def main():
-    """Основная функция запуска бота"""
-    global application
-    
     print("🤖 Бот запускается...")
     
     if not BOT_TOKEN:
@@ -1307,24 +666,15 @@ def main():
         application = Application.builder().token(BOT_TOKEN).build()
         
         conv_handler = ConversationHandler(
-            entry_points=[
-                CommandHandler('train', start_training_command),
-                CommandHandler('weight', weight_command)
-            ],
+            entry_points=[CommandHandler('train', start_training_command)],
             states={
                 CHOOSING_DAY: [MessageHandler(filters.Regex('^(День А|День Б)$'), show_exercise_list)],
                 CHOOSING_EXERCISE: [
-                    CallbackQueryHandler(handle_exercise_selection, pattern='^(ex_|progress|finish|reminders|stats|timer_|back_to_exercises)'),
-                    CallbackQueryHandler(show_exercise_statistics, pattern='^(stat_)')
+                    CallbackQueryHandler(handle_exercise_selection, pattern='^(ex_|progress|finish|reminders|timer_|back_to_exercises)')
                 ],
                 ENTERING_EXERCISE_DATA: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, handle_exercise_input),
-                    CommandHandler('skip', skip_exercise),
-                    CallbackQueryHandler(handle_exercise_selection, pattern='^(progress|finish|reminders|stats|timer_|back_to_exercises)')
-                ],
-                WEIGHING: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_weight_input),
-                    CommandHandler('skip', skip_weight)
+                    CallbackQueryHandler(handle_exercise_selection, pattern='^(progress|finish|reminders|timer_|back_to_exercises)')
                 ]
             },
             fallbacks=[CommandHandler('cancel', cancel)],
@@ -1344,6 +694,8 @@ def main():
         
     except Exception as e:
         print(f"❌ Ошибка при запуске бота: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == '__main__':
