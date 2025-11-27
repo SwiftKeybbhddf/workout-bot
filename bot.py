@@ -783,6 +783,7 @@ async def handle_exercise_selection(update: Update, context: ContextTypes.DEFAUL
     elif data == "back_to_exercises":
         return await show_exercise_list_after_input(update, context)
     elif data.startswith("ex_"):
+        
         # ... существующий код выбора упражнения ...
 async def handle_ai_advice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка кнопки ИИ-советов"""
