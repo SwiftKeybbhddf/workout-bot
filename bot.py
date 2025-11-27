@@ -219,14 +219,113 @@ def check_workout_reminders(user_id):
     
     return None
 
+# ========== ИИ-АНАЛИТИКА И РЕКОМЕНДАЦИИ ==========
+
+def get_all_exercises():
+    """Возвращает список всех упражнений из программ"""
+    all_exercises = set()
+    for day, program in TRAINING_PROGRAMS.items():
+        for exercise in program['exercises']:
+            all_exercises.add(exercise)
+    return list(all_exercises)
+
+def analyze_progress(user_id):
+    """Анализирует прогресс и дает рекомендации"""
+    user_data = load_user_data()
+    if user_id not in user_data:
+        return "💡 Начните тренировки для получения рекомендаций"
+    
+    history = user_data[user_id]['history']
+    if len(history) < 3:
+        return "📊 Соберите больше данных (3+ тренировки) для персонализированных рекомендаций"
+    
+    recommendations = []
+    
+    # Анализ прогресса по упражнениям
+    for exercise_name in get_all_exercises():
+        exercise_history = get_exercise_history(user_id, exercise_name, limit=5)
+        if len(exercise_history) >= 3:
+            rec = analyze_exercise_progress(exercise_name, exercise_history)
+            if rec:
+                recommendations.append(rec)
+    
+    # Анализ общего прогресса
+    general_rec = analyze_general_progress(user_id, history)
+    if general_rec:
+        recommendations.append(general_rec)
+    
+    return "\n".join(recommendations) if recommendations else "✅ Продолжайте в том же духе! Ваш прогресс стабилен."
+
+def analyze_exercise_progress(exercise_name, history):
+    """Анализирует прогресс конкретного упражнения"""
+    weights = [h['weight'] for h in history]
+    reps = [h['reps'] for h in history]
+    
+    if len(weights) < 3:
+        return None
+    
+    # Проверка на плато
+    if len(set(weights[-3:])) == 1 and reps[-1] >= 10:
+        return f"🎯 {exercise_name}: готовы к увеличению веса! Попробуйте +2.5кг"
+    
+    # Проверка на регресс
+    if weights[-1] < weights[-2]:
+        return f"⚠️ {exercise_name}: вес упал. Проверьте восстановление"
+    
+    # Отличный прогресс
+    if weights[-1] > weights[-3]:
+        return f"🚀 {exercise_name}: отличный прогресс! +{weights[-1] - weights[-3]:.1f}кг"
+    
+    return None
+
+def analyze_general_progress(user_id, history):
+    """Анализирует общий прогресс тренировок"""
+    if len(history) < 4:
+        return None
+    
+    # Анализ частоты тренировок
+    dates = [datetime.fromisoformat(session['start_time']) for session in history[-4:]]
+    date_diffs = [(dates[i] - dates[i+1]).days for i in range(len(dates)-1)]
+    avg_frequency = sum(date_diffs) / len(date_diffs)
+    
+    if avg_frequency > 5:
+        return f"📅 Тренируйтесь чаще (идеально 2-3 раза в неделю)"
+    elif avg_frequency < 2:
+        return f"🛌 Давайте мышцам больше времени на восстановление"
+    
+    return None
+
+def find_last_session_by_day(user_id, day):
+    """Находит последнюю тренировку по дню"""
+    user_data = load_user_data()
+    if user_id not in user_data:
+        return None
+    
+    history = user_data[user_id]['history']
+    for session in reversed(history):
+        if session['day'] == day:
+            return session
+    return None
+
+async def ai_advice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /advice - получает ИИ рекомендации"""
+    user_id = str(update.effective_user.id)
+    advice = analyze_progress(user_id)
+    
+    await update.message.reply_text(
+        f"🤖 <b>Ваши персонализированные рекомендации:</b>\n\n{advice}",
+        parse_mode='HTML'
+    )
 # ========== ФУНКЦИИ ИНТЕРФЕЙСА ==========
 def get_exercise_keyboard(day, completed_exercises, user_id=None):
+    """Создает расширенную клавиатуру для выбора упражнений с быстрыми действиями"""
     exercises = TRAINING_PROGRAMS[day]['exercises']
     keyboard = []
     
     for i, exercise in enumerate(exercises):
         status = "✅" if i in completed_exercises else "◻️"
         
+        # Добавляем подсказку с последним результатом
         hint = ""
         if user_id:
             history = get_exercise_history(user_id, exercise, limit=1)
@@ -239,9 +338,14 @@ def get_exercise_keyboard(day, completed_exercises, user_id=None):
             callback_data=f"ex_{i}"
         )])
     
+    # Добавляем расширенные кнопки управления с быстрыми действиями
+    keyboard.append([
+        InlineKeyboardButton("📋 Копировать прошлые веса", callback_data="quick_copy"),
+        InlineKeyboardButton("🔄 Повторить тренировку", callback_data="repeat_last")
+    ])
     keyboard.append([
         InlineKeyboardButton("📊 Прогресс", callback_data="progress"),
-        InlineKeyboardButton("🎯 Рекомендации", callback_data="reminders")
+        InlineKeyboardButton("🎯 ИИ-советы", callback_data="ai_advice")
     ])
     keyboard.append([
         InlineKeyboardButton("🏁 Завершить", callback_data="finish")
@@ -654,6 +758,105 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update and update.effective_message:
         await update.effective_message.reply_text("❌ Произошла ошибка. Попробуйте еще раз или начните заново: /start")
 
+async def handle_exercise_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка выбора упражнения с таймерами в том же окне"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(update.effective_user.id)
+    data = query.data
+    
+    if data == "progress":
+        return await show_current_progress(update, context)
+    elif data == "finish":
+        return await finish_training_session(update, context)
+    elif data == "reminders":
+        return await show_reminders(update, context)
+    elif data == "ai_advice":
+        return await handle_ai_advice_callback(update, context)  # НОВОЕ
+    elif data == "quick_copy":
+        return await handle_quick_copy(update, context)  # НОВОЕ
+    elif data == "repeat_last":
+        return await handle_repeat_last(update, context)  # НОВОЕ
+    elif data.startswith("timer_"):
+        return await handle_timer_selection(update, context)
+    elif data == "back_to_exercises":
+        return await show_exercise_list_after_input(update, context)
+    elif data.startswith("ex_"):
+        # ... существующий код выбора упражнения ...
+async def handle_ai_advice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка кнопки ИИ-советов"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(update.effective_user.id)
+    advice = analyze_progress(user_id)
+    
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"🤖 <b>ИИ-рекомендации:</b>\n\n{advice}",
+        parse_mode='HTML'
+    )
+    
+    # Возвращаем к тому же интерфейсу
+    return await show_exercise_list_after_input(update, context)
+
+async def handle_quick_copy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Быстрое копирование прошлых весов"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(update.effective_user.id)
+    user_data = load_user_data()
+    
+    if user_id not in user_data or 'current_session' not in user_data[user_id]:
+        await query.edit_message_text("❌ Активная тренировка не найдена")
+        return
+    
+    current_session = user_data[user_id]['current_session']
+    day = current_session['day']
+    
+    # Копируем веса из последней тренировки этого дня
+    last_session = find_last_session_by_day(user_id, day)
+    if last_session:
+        current_session['exercises'] = last_session['exercises'].copy()
+        # Помечаем упражнения как выполненные
+        current_session['completed_exercises'] = list(range(len(TRAINING_PROGRAMS[day]['exercises'])))
+        save_user_data(user_data)
+        await query.edit_message_text("✅ Веса скопированы из последней тренировки!")
+    else:
+        await query.edit_message_text("❌ Не найдено предыдущих тренировок для копирования")
+    
+    return await show_exercise_list_after_input(update, context)
+
+async def handle_repeat_last(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Повтор последней тренировки (любого дня)"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(update.effective_user.id)
+    user_data = load_user_data()
+    
+    if user_id not in user_data or not user_data[user_id].get('history'):
+        await query.edit_message_text("❌ Нет истории тренировок для повторения")
+        return
+    
+    # Берём последнюю тренировку независимо от дня
+    last_session = user_data[user_id]['history'][-1]
+    day = last_session['day']
+    
+    # Устанавливаем текущий день
+    context.user_data['current_day'] = day
+    user_data[user_id]['current_session'] = {
+        'day': day, 
+        'exercises': last_session['exercises'].copy(),
+        'start_time': datetime.now().isoformat(),
+        'completed_exercises': list(range(len(TRAINING_PROGRAMS[day]['exercises'])))
+    }
+    save_user_data(user_data)
+    
+    await query.edit_message_text(f"✅ Тренировка '{day}' повторена!")
+    return await show_exercise_list_after_input(update, context)        
 # ========== ЗАПУСК БОТА ==========
 def main():
     print("🤖 Бот запускается...")
@@ -687,7 +890,7 @@ def main():
         application.add_handler(CommandHandler("cancel", cancel))
         application.add_handler(conv_handler)
         application.add_error_handler(error_handler)
-        
+        application.add_handler(CommandHandler("advice", ai_advice_command))
         print("✅ Бот успешно запущен и готов к работе!")
         
         application.run_polling()
