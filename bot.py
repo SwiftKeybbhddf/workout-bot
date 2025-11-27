@@ -2,6 +2,7 @@ import logging
 import json
 import os
 import sys
+import asyncio
 from datetime import datetime
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -13,6 +14,22 @@ from telegram.ext import (
     ConversationHandler,
     CallbackQueryHandler
 )
+from flask import Flask
+from threading import Thread
+
+# ========== FLASK APP FOR HEALTH CHECKS ==========
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "🤖 Telegram Bot is Running!", 200
+
+@app.route('/health')
+def health():
+    return {"status": "ok", "bot": "running"}, 200
+
+def run_flask():
+    app.run(host='0.0.0.0', port=5000, debug=False)
 
 # ========== НАСТРОЙКА ЛОГГИРОВАНИЯ ==========
 logging.basicConfig(
@@ -924,6 +941,11 @@ def main():
         return
     
     try:
+        # Запускаем Flask в отдельном потоке для health checks
+        flask_thread = Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        print("✅ HTTP сервер для health checks запущен на порту 5000")
+        
         application = Application.builder().token(BOT_TOKEN).build()
         
         # Обработчик диалога тренировки
